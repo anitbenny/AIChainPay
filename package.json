@@ -1,0 +1,46 @@
+{
+  "name": "aichainpay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "connector",
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "compile": "hardhat build",
+    "test:contracts": "hardhat test mocha",
+    "test:backend": "npm run test -w connector",
+    "check:frontend": "npm run check -w frontend",
+    "test": "npm run test:contracts && npm run test:backend",
+    "build": "npm run compile && npm run build -w connector && npm run build -w frontend",
+    "chain": "hardhat node --network hardhat",
+    "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
+    "deploy:sepolia": "hardhat run scripts/deploy.ts --build-profile production --network sepolia",
+    "test:local-mcp": "tsx scripts/test-local-mcp.ts",
+    "test:local-ui": "tsx scripts/test-local-ui.ts",
+    "test:local-execution": "tsx scripts/test-local-execution.ts",
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:connector": "npm run dev -w connector"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-mocha-ethers": "4.0.0",
+    "@openzeppelin/contracts": "5.6.1",
+    "@types/chai": "5.2.2",
+    "@types/mocha": "10.0.10",
+    "@types/node": "22.19.15",
+    "better-sqlite3": "12.4.1",
+    "chai": "5.3.3",
+    "dotenv": "18.0.8",
+    "ethers": "6.17.0",
+    "hardhat": "3.20.0",
+    "mocha": "12.0.0",
+    "playwright": "1.64.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3"
+  }
+}

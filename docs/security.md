@@ -1,0 +1,27 @@
+# Security and trust boundaries
+
+AIChainPay is an educational Sepolia testnet demonstration, not audited financial infrastructure. Do not use mainnet ETH, production funds, personal memo text, or a wallet key containing valuable assets.
+
+## Who can do what
+
+- The owner signs initial wallet login and each deposit, grant/replacement, revoke, withdrawal and optional direct owner payment in MetaMask. The login signature proves EOA control but does **not** grant spending. The backend never imports the owner key. EIP-1271 smart-contract wallets are not supported in v1.
+- The dedicated backend agent pays its own gas. The contract lets it spend **only deposited vault credit** under the owner's active allowance, per-payment cap, expiry and optional recipient allowlist. An empty allowlist means any otherwise valid recipient. Future deposits can be spent while a grant remains active. A compromised backend/agent could spend the remaining authorized allowance; use small limits and short expiry.
+- OAuth grants API scopes to a wallet-linked ChatGPT connection. It is not an on-chain spending permission. Browser logout or OAuth disconnection does not revoke a contract grant. Use the dashboard's MetaMask-signed revoke transaction separately. Revocation blocks future contract execution after mining, but cannot undo completed payments or guarantee ordering ahead of already pending agent transactions.
+- A native ChatGPT write approval is a **client-side UI gate**, not an Ethereum signature or cryptographic server-verifiable proof of a click. The contract verifies signer/limits, not human chat approval. The server never accepts an `approved` tool argument or model sentence as proof. Execution defaults to disabled pending a real account/client test. [Client integration](./client-integration.md) describes the gate and its limitations.
+
+## On-chain and off-chain safeguards
+
+The vault uses OpenZeppelin's reentrancy guard, checks-effects-interactions, custom errors, unique request IDs, monotonically increasing permission epochs, deadlines and bounded UTF-8 memo bytes. It never holds ordinary MetaMask wallet ETH. Direct transfers to the contract revert; forced ETH can still create uncredited surplus, so the invariant is contract ETH balance **at least** total credited liabilities.
+
+The connector checks configured chain ID, deployed code, expected code hash on Sepolia, and vault identity before serving. Tools cannot choose an RPC, chain, owner or arbitrary calldata. Amounts are strict decimal strings converted with ethers `parseEther` and stored as wei text; addresses are validated, not guessed or ENS-resolved. Payment intent fields are immutable, ABI-encoded into a digest and bound to verified wallet plus OAuth client. A digest is an integrity identifier, **not** a user signature. Request IDs are random and replay-protected by the contract.
+
+SQLite stores OAuth objects, sessions, requests, audit rows, signer attempts and event cursors. It uses WAL/foreign keys, CAS claims and a single-instance signer queue. Raw signed transaction bytes are AES-GCM-encrypted in the database using a key derived from `SESSION_SECRET`; preserve that secret across restarts or signed-before-broadcast recovery will fail. Keep the database, `.env`, signing JWK, backups and logs private. The repository ignores these files. Rotate/revoke old access using actual OAuth/client controls and on-chain revoke where appropriate.
+
+Signing persists the nonce, hash and encrypted bytes before broadcast. RPC timeout is treated as uncertain, not authorization to generate a new payment. Reconciliation checks receipt status, chain, target contract, signer, nonce and matching `PaymentExecuted` event. A reorg or mismatch moves to `reconciliation_required`; an operator must investigate before retrying. Confirmation count is not finality. Do not use the agent key for other transactions while the connector operates; the implementation assumes one backend writer and one signer nonce stream.
+
+## Operational limits and known gaps
+
+- **No live ChatGPT or Sepolia acceptance evidence yet.** Do not enable the signer based only on local test stubs or MCP tool annotations. The actual client approval UX may be absent or may show too little intent detail. If so, keep execution disabled and escalate the product decision; do not auto-execute or redirect routine approval to the website.
+- The OAuth provider is `oidc-provider` with persistent SQLite objects, PKCE and resource audience checks. The ChatGPT Client ID Metadata Document route has not been exercised with an actual account. Claude is not verified. Browser sessions are HttpOnly, Secure on HTTPS, SameSite Lax and CSRF-protected for authenticated mutations. HTTPS, secure proxy/Host configuration, backup, monitoring and rate limiting still need deployment hardening. The code is not presented as internet-scale production auth.
+- In-chat status is polled with `get_request_status`; there is no supported unsolicited chat push. Pending, signed and submitted are **not** confirmed. Explorer and event data are read from the configured chain. Indexed history covers this vault only, not all wallet transactions; the API signals incomplete catch-up.
+- Memos, recipient addresses and payment amounts are public on Ethereum. Never place secrets or personal data in memos. Do not paste owner, agent or deployer private keys or seed phrases into chats, prompts, tool calls or issue reports.

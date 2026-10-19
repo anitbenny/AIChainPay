@@ -1,0 +1,26 @@
+{
+  "name": "@aichainpay/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aichainpay/shared": "0.1.0",
+    "ethers": "6.17.0",
+    "lucide-react": "1.59.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.1.2",
+    "vite": "8.3.4",
+    "tailwindcss": "4.3.3",
+    "@tailwindcss/vite": "4.3.3"
+  }
+}

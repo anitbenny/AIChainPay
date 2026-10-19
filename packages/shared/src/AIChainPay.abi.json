@@ -1,0 +1,695 @@
+[
+  {
+    "inputs": [],
+    "name": "AllowanceExceeded",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "DirectTransferDisabled",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "DuplicateRecipient",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "IndexOutOfBounds",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InsufficientBalance",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidAgent",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidExpiry",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidGrant",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidRecipient",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidRequestId",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "MemoTooLong",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PaymentTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PermissionExpired",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PermissionInactive",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "RecipientNotAllowed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ReentrancyGuardReentrantCall",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "RequestExpired",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "RequestUsed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "StalePermission",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TooManyRecipients",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TransferFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ZeroAmount",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "epoch",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "allowance",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "maxPerPayment",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "expiresAt",
+        "type": "uint64"
+      },
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "restrictedRecipients",
+        "type": "bool"
+      }
+    ],
+    "name": "AgentGranted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "epoch",
+        "type": "uint256"
+      }
+    ],
+    "name": "AgentRevoked",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "Deposited",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "requestId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "paymentId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "executor",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "memo",
+        "type": "string"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "timestamp",
+        "type": "uint64"
+      }
+    ],
+    "name": "PaymentExecuted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "Withdrawn",
+    "type": "event"
+  },
+  {
+    "stateMutability": "payable",
+    "type": "fallback"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_ALLOWED_RECIPIENTS",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_MEMO_BYTES",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "balances",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "deposit",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "internalType": "address payable",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "string",
+        "name": "memo",
+        "type": "string"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "requestId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "permissionEpoch",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint64",
+        "name": "requestDeadline",
+        "type": "uint64"
+      }
+    ],
+    "name": "executeAgentPayment",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      }
+    ],
+    "name": "getAgentPermission",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "bool",
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "internalType": "uint256",
+            "name": "remainingAllowance",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "maxPerPayment",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint64",
+            "name": "expiresAt",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint256",
+            "name": "epoch",
+            "type": "uint256"
+          },
+          {
+            "internalType": "bool",
+            "name": "restrictedRecipients",
+            "type": "bool"
+          }
+        ],
+        "internalType": "struct AIChainPay.AgentPermission",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      }
+    ],
+    "name": "getBalance",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "participant",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "index",
+        "type": "uint256"
+      }
+    ],
+    "name": "getPayment",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "id",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address",
+            "name": "owner",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "executor",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "string",
+            "name": "memo",
+            "type": "string"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "requestId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "uint64",
+            "name": "timestamp",
+            "type": "uint64"
+          }
+        ],
+        "internalType": "struct AIChainPay.Payment",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "participant",
+        "type": "address"
+      }
+    ],
+    "name": "getPaymentCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "totalAllowance",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "maxPerPayment",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint64",
+        "name": "expiresAt",
+        "type": "uint64"
+      },
+      {
+        "internalType": "address[]",
+        "name": "recipients",
+        "type": "address[]"
+      }
+    ],
+    "name": "grantAgent",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "recipient",
+        "type": "address"
+      }
+    ],
+    "name": "isAllowedRecipient",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address payable",
+        "name": "recipient",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "string",
+        "name": "memo",
+        "type": "string"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "requestId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "pay",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      }
+    ],
+    "name": "revokeAgent",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "totalLiabilities",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "name": "usedRequestIds",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "withdraw",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "stateMutability": "payable",
+    "type": "receive"
+  }
+]

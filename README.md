@@ -124,4 +124,5 @@ No GitHub remote/publication exists yet, and GitHub CLI is not installed. CI con
 
 This is educational testnet infrastructure, not audited, production-ready or PayBox-equivalent custody.
 #   A I C h a i n P a y  
+ #   A I C h a i n P a y  
  

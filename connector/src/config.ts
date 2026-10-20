@@ -13,7 +13,7 @@ export type Config = {
   publicBaseUrl: string;
   issuer: string;
   sessionSecret: string;
-  confirmationAdapter: "disabled" | "chatgpt_native";
+  confirmationAdapter: "disabled" | "chatgpt_native" | "chatgpt_app";
   requestTtlSeconds: number;
   requiredConfirmations: number;
   port: number;
@@ -40,7 +40,10 @@ export function loadConfig(): Config {
   const sessionSecret = required("SESSION_SECRET");
   if (sessionSecret.length < 32) throw new Error("SESSION_SECRET must be at least 32 characters");
   const adapter = process.env.CONFIRMATION_ADAPTER ?? "disabled";
-  if (adapter !== "disabled" && adapter !== "chatgpt_native") throw new Error("Unknown confirmation adapter");
+  if (adapter !== "disabled" && adapter !== "chatgpt_native" && adapter !== "chatgpt_app") throw new Error("Unknown confirmation adapter");
+  if (adapter === "chatgpt_app" && (process.env.CHATGPT_APP_APPROVAL_TESTED !== "1" || chainId !== 11155111 || publicBaseUrl.protocol !== "https:")) {
+    throw new Error("ChatGPT app approval requires recorded live card test, Sepolia and HTTPS");
+  }
   if (adapter === "chatgpt_native" && (process.env.CHATGPT_APPROVAL_TESTED !== "1" || chainId !== 11155111 || publicBaseUrl.protocol !== "https:")) {
     throw new Error("ChatGPT native approval requires recorded live confirmation test, Sepolia and HTTPS");
   }
@@ -55,7 +58,7 @@ export function loadConfig(): Config {
   const agentKey = process.env.AGENT_PRIVATE_KEY || undefined;
   if (agentKey && !/^0x[0-9a-fA-F]{64}$/.test(agentKey)) throw new Error("Invalid agent key format");
   const agentAddress = agentKey ? new Wallet(agentKey).address : process.env.AGENT_ADDRESS ? normalizeAddress(process.env.AGENT_ADDRESS) : undefined;
-  if (adapter === "chatgpt_native" && !agentKey) throw new Error("Dedicated agent key required for enabled execution");
+  if (adapter !== "disabled" && !agentKey) throw new Error("Dedicated agent key required for enabled execution");
   const contractCodeHash = process.env.CONTRACT_CODE_HASH || undefined;
   if (chainId === 11155111 && !contractCodeHash) throw new Error("CONTRACT_CODE_HASH from the deployment manifest is required on Sepolia");
   if (contractCodeHash && !/^0x[0-9a-fA-F]{64}$/.test(contractCodeHash)) throw new Error("Invalid contract code hash");

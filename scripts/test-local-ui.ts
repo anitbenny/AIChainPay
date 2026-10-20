@@ -8,6 +8,33 @@ const base = "http://localhost:3000";
 async function main() {
   const browser = await chromium.launch({ executablePath: edge, headless: true });
   try {
+    const wrongChainPage = await browser.newPage();
+    await wrongChainPage.addInitScript({ content: `let chain = "0xaa36a7";
+    let localChainAdded = false;
+    window.ethereum = { request: async ({ method, params }) => {
+      if (method === "eth_accounts") return ["0x0000000000000000000000000000000000000001"];
+      if (method === "eth_chainId") return chain;
+      if (method === "wallet_switchEthereumChain") {
+        if (!localChainAdded) throw { code: 4902, message: "Unknown chain" };
+        chain = params[0].chainId;
+        return null;
+      }
+      if (method === "wallet_addEthereumChain") {
+        if (params[0].chainId !== "0x7a69" || params[0].rpcUrls[0] !== "http://127.0.0.1:8545") throw new Error("Wrong local network configuration");
+        localChainAdded = true;
+        return null;
+      }
+      throw new Error("Unexpected test-provider request: " + method);
+    }, on: () => {}, removeListener: () => {} };` });
+    await wrongChainPage.goto(base, { waitUntil: "networkidle" });
+    await wrongChainPage.getByRole("button", { name: "Vault setup" }).click();
+    const verifyOnWrongChain = wrongChainPage.getByRole("button", { name: "Verify wallet — sign login message" });
+    await verifyOnWrongChain.waitFor();
+    if (!(await verifyOnWrongChain.isDisabled())) throw new Error("Wallet verification must be disabled on the wrong chain");
+    await wrongChainPage.getByRole("button", { name: "Switch to required network" }).click();
+    await wrongChainPage.waitForFunction(() => [...document.querySelectorAll("button")].some(button => button.textContent?.includes("Verify wallet") && !button.disabled));
+    await wrongChainPage.close();
+
     const page = await browser.newPage({ viewport: { width: 1440, height: 1080 }, deviceScaleFactor: 1 });
     page.on("pageerror", error => console.error("Browser page error:", error.message));
     await page.addInitScript({ content: `(() => {
@@ -29,8 +56,9 @@ async function main() {
     await page.getByText("LOCAL TEST CHAIN 31337").waitFor();
     const injectedState = await page.evaluate(async () => { try { const result = await (window as any).ethereum.request({ method: "eth_accounts" }); return { accountCount: result.length }; } catch (error) { return { error: error instanceof Error ? error.message : "unknown" }; } });
     if ("error" in injectedState) throw new Error(`Injected local test provider failed: ${injectedState.error}`);
-    await page.getByRole("button", { name: "Sign expiring login challenge" }).click();
-    await page.getByText("Wallet ownership verified.").waitFor({ timeout: 15_000 });
+    await page.getByRole("button", { name: "Verify wallet — sign login message" }).click();
+    try { await page.getByText("Wallet ownership verified.").waitFor({ timeout: 15_000 }); }
+    catch { throw new Error(`Wallet login did not finish; visible alerts: ${JSON.stringify(await page.locator(".alert").allTextContents())}`); }
     await page.getByRole("button", { name: "Vault setup" }).click();
     await page.getByLabel("Deposit amount (ETH)").fill("0.02");
     await page.getByRole("button", { name: "Deposit with MetaMask" }).click();
@@ -49,7 +77,7 @@ async function main() {
     await mobile.goto(base, { waitUntil: "networkidle" });
     const overflow = await mobile.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
     if (overflow) throw new Error("Mobile dashboard has horizontal overflow");
-    console.log(JSON.stringify({ login: "passed", local_chain_deposit: "mined", local_chain_grant: "mined", dashboard_balance: `${vaultBalance} ETH`, screenshot: out, mobile_horizontal_overflow: false }, null, 2));
+    console.log(JSON.stringify({ wrong_chain_sign_in_visible_and_disabled: true, local_chain_add_and_switch: "passed", login: "passed", local_chain_deposit: "mined", local_chain_grant: "mined", dashboard_balance: `${vaultBalance} ETH`, screenshot: out, mobile_horizontal_overflow: false }, null, 2));
   } finally { await browser.close(); }
 }
 

@@ -83,7 +83,11 @@ export function createOAuthProvider(db: Database.Database, config: Config): Prov
       },
     },
   };
-  return new Provider(config.issuer, configuration);
+  const provider = new Provider(config.issuer, configuration);
+  // TLS terminates at the HTTPS forwarding proxy. Without Koa proxy mode,
+  // discovery advertises http:// authorization/token URLs from the local hop.
+  provider.proxy = config.publicBaseUrl.startsWith("https:");
+  return provider;
 }
 
 export type Principal = { address: string; clientId: string; scopes: Set<string> };

@@ -11,6 +11,7 @@ import type { Principal } from "../connector/src/auth/oauth.js";
 
 async function main() {
   const rpc = new JsonRpcProvider("http://127.0.0.1:8545");
+  if ((await rpc.getNetwork()).chainId !== 31337n) throw new Error("Execution test requires local chain 31337; refusing any other network");
   const owner = await rpc.getSigner(0);
   const recipient = await rpc.getSigner(1);
   const agent = Wallet.createRandom().connect(rpc);

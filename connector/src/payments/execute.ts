@@ -49,7 +49,7 @@ export class ExecutionService {
     if (["confirming", "signing", "signed", "submitted", "confirmed", "reverted", "reconciliation_required"].includes(row.state)) return this.status(principal, id);
     if (row.state !== "prepared") throw new Error(`Request cannot execute from ${row.state}`);
     const now = Math.floor(Date.now() / 1000);
-    if (row.deadline < now) {
+    if (row.deadline <= now) {
       this.db.prepare("UPDATE payment_requests SET state='expired',updated_at=? WHERE id=? AND state='prepared'").run(now, id);
       throw new Error("Payment intent expired");
     }
@@ -81,7 +81,7 @@ export class ExecutionService {
     const row = requestForPrincipal(this.db, principal, id)!;
     const wallet = this.wallet!;
     const now = Math.floor(Date.now() / 1000);
-    if (row.deadline < now) throw new Error("Payment intent expired before signing");
+    if (row.deadline <= now) throw new Error("Payment intent expired before signing");
     await this.chain.check();
     const permission = await this.chain.permission(row.owner, wallet.address);
     if (!permission.active || permission.expiresAt <= now || permission.epoch.toString() !== row.permission_epoch) throw new Error("Agent grant revoked, expired or replaced");
@@ -135,6 +135,10 @@ export class ExecutionService {
   async status(principal: Principal, id: string) {
     const row = requestForPrincipal(this.db, principal, id);
     if (!row) throw new Error("Request not found");
+    if (row.state === "prepared" && row.deadline <= Math.floor(Date.now() / 1000)) {
+      this.db.prepare("UPDATE payment_requests SET state='expired',updated_at=? WHERE id=? AND state='prepared' AND tx_hash IS NULL")
+        .run(Math.floor(Date.now() / 1000), id);
+    }
     if (["signed", "submitted", "confirmed", "reconciliation_required"].includes(row.state)) await this.reconcile(row);
     const current = requestForPrincipal(this.db, principal, id)!;
     const receipt = current.tx_hash ? await this.chain.provider.getTransactionReceipt(current.tx_hash) : null;
@@ -157,13 +161,28 @@ export class ExecutionService {
     if (!tx || Number(tx.chainId) !== row.chain_id || tx.to?.toLowerCase() !== row.contract_address.toLowerCase() || tx.from.toLowerCase() !== row.agent.toLowerCase() || tx.nonce !== attempt.nonce) {
       this.setState(row.id, "reconciliation_required"); return;
     }
+    // A successful receipt alone does not prove that the stored intent was
+    // executed. Verify the transaction's exact call and zero ETH value.
+    try {
+      const call = this.chain.iface.parseTransaction({ data: tx.data, value: tx.value });
+      if (!call || call.name !== "executeAgentPayment" || tx.value !== 0n ||
+          call.args.owner.toLowerCase() !== row.owner.toLowerCase() ||
+          call.args.recipient.toLowerCase() !== row.recipient.toLowerCase() ||
+          BigInt(call.args.amount) !== BigInt(row.amount_wei) ||
+          call.args.memo !== row.memo ||
+          call.args.requestId.toLowerCase() !== row.request_id_bytes32.toLowerCase() ||
+          BigInt(call.args.permissionEpoch) !== BigInt(row.permission_epoch) ||
+          Number(call.args.requestDeadline) !== row.deadline) {
+        this.setState(row.id, "reconciliation_required"); return;
+      }
+    } catch { this.setState(row.id, "reconciliation_required"); return; }
     if (receipt.status === 0) { this.setState(row.id, "reverted"); return; }
     if (attempt.receipt_block_hash && attempt.receipt_block_hash !== receipt.blockHash) { this.setState(row.id, "reconciliation_required"); return; }
     const matches = receipt.logs.some(log => {
       if (log.address.toLowerCase() !== row.contract_address.toLowerCase()) return false;
       try {
         const event = this.chain.iface.parseLog(log);
-        return event?.name === "PaymentExecuted" && event.args.owner.toLowerCase() === row.owner.toLowerCase() && event.args.recipient.toLowerCase() === row.recipient.toLowerCase() && event.args.requestId.toLowerCase() === row.request_id_bytes32.toLowerCase() && event.args.executor.toLowerCase() === row.agent.toLowerCase() && BigInt(event.args.amount) === BigInt(row.amount_wei);
+        return event?.name === "PaymentExecuted" && event.args.owner.toLowerCase() === row.owner.toLowerCase() && event.args.recipient.toLowerCase() === row.recipient.toLowerCase() && event.args.requestId.toLowerCase() === row.request_id_bytes32.toLowerCase() && event.args.executor.toLowerCase() === row.agent.toLowerCase() && BigInt(event.args.amount) === BigInt(row.amount_wei) && event.args.memo === row.memo;
       } catch { return false; }
     });
     if (!matches) { this.setState(row.id, "reconciliation_required"); return; }

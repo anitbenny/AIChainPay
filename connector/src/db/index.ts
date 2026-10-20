@@ -91,6 +91,19 @@ export function migrate(db: Database.Database): void {
       detail TEXT NOT NULL,
       at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS chat_approvals (
+      token_hash TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL REFERENCES payment_requests(id),
+      owner TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      intent_digest TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK(mode IN ('verify','execute')),
+      expires_at INTEGER NOT NULL,
+      decision TEXT CHECK(decision IN ('approve','reject','superseded')),
+      decided_at INTEGER,
+      used_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS chat_approvals_request_idx ON chat_approvals(request_id);
     CREATE TABLE IF NOT EXISTS index_cursors (
       chain_id INTEGER NOT NULL,
       contract_address TEXT NOT NULL,

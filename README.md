@@ -1,96 +1,127 @@
 # AIChainPay
+Natural-language payments from a bounded Solidity vault. **Sepolia test ETH only.**
 
-Natural-language blockchain payments through an AI connector. AIChainPay is an educational Solidity vault for **Sepolia test ETH only**. The owner uses MetaMask for setup, deposits, bounded agent grants, revocation, and withdrawals. A separate signer can later pay a recipient directly from deposited vault ETH, within on-chain limits, after a supported chat-client write confirmation. Routine payment approval is designed to stay in ChatGPT; it does not use a website approval link.
+## What works and what is not claimed
+The Sepolia vault, owner MetaMask setup, authenticated ChatGPT reads, exact in-chat confirmation, agent-signed transfer, recipient receipt and authenticated `confirmed` status have been observed. The [0.0001 ETH payment](https://sepolia.etherscan.io/tx/0x2bfe8bfc442c084cc012fed2b345044819bad1a11dfef682fea7a7e0cbff01cf) succeeded in block **11952073**; do not repeat that request. A real [revoke](https://sepolia.etherscan.io/tx/0x1e8d94f28b434eb393d8e16e830bdd52cb28b7ccc6ceeddd9fcbf7d72) and later [regrant](https://sepolia.etherscan.io/tx/0x5759f2a59d21ad4e1842cb3c07eff8a1e205498d7ebd08bc8c908612e93e4526) were also observed. Local over-limit and rejection tests pass; a live over-cap preparation was refused without a transaction. This is not an audited or permanently hosted service, and GitHub publication/CI have not been verified.
 
-**Current evidence:** contract, dashboard, OAuth/MCP and signer pipeline pass local-chain tests. There is **no Sepolia deployment or verified ChatGPT connection yet**. The running connector defaults to `CONFIRMATION_ADAPTER=disabled`, so its MCP tool will not sign or broadcast a payment. The local signer test uses an explicitly controlled approval stub, not a human/chat approval. See [implementation status](./IMPLEMENTATION_STATUS.md).
+A new **in-chat MCP Apps confirmation card** is implemented and locally tested. On 2026-10-20, its real ChatGPT rendering, verification-only Confirm and Reject, and separate live-mode Confirm were observed and matched to backend audit. It shows the exact payment and requires its own Confirm/Reject action, rather than treating remembered tool approval as payment approval. Host isolation is a trust assumption. No website approval fallback is used.
 
-![Real local-chain AIChainPay dashboard after a mined test deposit and grant](./docs/screenshots/local-chain-dashboard.png)
+| Public deployment | Value |
+| --- | --- |
+| Network | Sepolia, chain ID 11155111 |
+| Vault | [0x915fCDd60d648dC9e9F558e84f805C28269E0aAC](https://sepolia.etherscan.io/address/0x915fCDd60d648dC9e9F558e84f805C28269E0aAC) |
+| Creation transaction | [0xcd059159f582a2783da6f7652d4fec4c390e1696db1b596b2b291ee78005d46d](https://sepolia.etherscan.io/tx/0xcd059159f582a2783da6f7652d4fec4c390e1696db1b596b2b291ee78005d46d) |
+| Deployment block | 11947272 |
+| Dashboard (current laptop demo) | https://upscale-nanometer-duvet.ngrok-free.dev |
+| MCP (OAuth) | https://upscale-nanometer-duvet.ngrok-free.dev/mcp |
+| Dedicated agent | 0x3d111235700B9C3BEdb097467a3bf98bB7FAfA3F |
 
-The screenshot is from a headless browser using an injected local test wallet provider on chain 31337. It is not a Sepolia or real MetaMask screenshot.
+The laptop, connector and ngrok must remain running. This is not permanent hosting. RPC verification confirms the deployed runtime bytecode, ABI and creation receipt; explorer source verification is not claimed.
 
-## What is here
+**Availability checked 2026-10-20:** the user restored ngrok. Public health and both OAuth discovery endpoints returned 200 with matching issuer/resource; unauthenticated MCP correctly returned 401. OAuth access was renewed and real card decisions reached the server. After the live transfer, an authenticated public MCP status call returned the confirmed transaction.
 
-- [AIChainPay.sol](./contracts/AIChainPay.sol): deposited balances, owner withdrawal/direct payment, bounded per-agent grant with expiry, per-payment cap, optional recipient allowlist, epoch-based revocation, replay protection, payment records/events and reentrancy protection. Recipients receive ETH, not internal credit.
-- [Frontend](./frontend/src/App.tsx): wallet connection, expiring SIWE login, deposit, grant/replace, revoke, withdraw, optional direct owner payment, chain balances, connector status and indexed vault activity.
-- [Connector](./connector/src/index.ts): verified-wallet sessions, OAuth authorization code + PKCE, wallet-bound MCP tools, immutable payment preparation, durable agent transaction/reconciliation pipeline, and on-chain event indexing. Database is persistent SQLite for **one backend instance**.
-- [Shared ABI/types](./packages/shared/src/index.ts) and [deployment script](./scripts/deploy.ts). The deploy script exports the actual ABI and network-specific manifest. The local test deployment is recorded in [deployment.31337.json](./packages/shared/src/deployment.31337.json); it disappears when the local chain restarts.
+Availability changes when the laptop or tunnel stops. Before a demonstration, open the public `/health` URL and check that `server`, `rpc` and `vault` are true. The dashboard's four-step checklist uses current wallet/grant state and historical authenticated MCP activity; the fourth check is not proof that an OAuth token is still valid.
 
-The owner key never enters the backend. The dedicated agent pays its own gas and can spend only the vault's credited ETH under the owner's active grant. Its key is still sensitive: compromise could spend the remaining authorized allowance. OAuth access, browser logout and on-chain revocation are separate controls. Public memos and addresses are visible on-chain. This is not audited or production financial infrastructure; see [security notes](./docs/security.md).
+## Flow and trust
+MetaMask connects and signs a login message. The owner deposits ETH and grants the dedicated agent a total allowance, per-payment cap, expiry and optional recipient restriction. An empty recipient list permits any valid recipient under the other limits. Grants replace previous grants and can cover future deposits.
 
-## Prerequisites and versions
+**Any supported MetaMask EOA can be an owner.** The contract does not hard-code the original wallet: `deposit()` credits `msg.sender`, and permissions are stored per owner and agent. Each new owner sees only their own balance and requests after wallet sign-in, must deposit their own Sepolia test ETH, and must grant the configured agent separately. A smart-contract wallet is not supported by this v1 SIWE login. The deployed contract and connector may be shared, but the connector currently uses one configured agent address and a local database; another user does not need a new contract deployment.
 
-Windows PowerShell and VS Code work with these commands. Use `npm.cmd` if PowerShell blocks `npm.ps1`. Install Node.js **22.13 or later** (tested 22.22.2), npm (tested 10.9.7), and MetaMask for manual wallet checks. Dependencies are pinned in [package-lock.json](./package-lock.json): Hardhat 3.20.0, Solidity 0.8.28, ethers 6.17.0, OpenZeppelin 5.6.1, MCP SDK 1.32.1, oidc-provider 9.12.2, React 19.3.1 and Vite 8.3.4. The exact versions and official compatibility references are in [architecture decisions](./docs/architecture-decisions.md).
+ChatGPT authenticates with OAuth/PKCE linked to that owner. It prepares an immutable payment, then opens the in-chat confirmation card. In live mode, a valid card decision allows the agent to call the vault. The contract checks the live grant, epoch, caps, recipient, balance, deadline and replay ID; the recipient receives actual ETH. The agent pays gas from its own wallet. Your ordinary MetaMask balance and key are never used for routine agent payments.
+
+The dashboard includes a wallet-authenticated **Developer diagnostics** tab for read-only chain, request-state and indexing inspection through the same API used by the Activity screen. It cannot approve or execute a payment; routine approval remains in ChatGPT.
+
+The backend and chat host remain trusted components. The card's random one-use capability is delivered in widget-only tool-result metadata; its callback is declared app-only. Server checks bind it to owner, OAuth client, exact intent digest, expiry and verify/live mode. These are not a wallet signature or cryptographic proof of a human: a malicious host or compromised backend remains outside this protection. No approval token is put in model-visible content, widget state or URLs. See [security](./docs/security.md) and [client integration](./docs/client-integration.md).
+
+## Run on the existing demonstration laptop (Windows PowerShell)
+Prerequisites: Node.js >=22.13, npm, the already configured **ignored local** Sepolia RPC/connector files, and an assigned HTTPS host. The contract is already deployed; do not deploy it again. Commands are in [package.json](./package.json). If port 3000 is already listening, use that connector rather than starting a duplicate.
 
 ```powershell
 cd D:\AIChainPay
 npm.cmd ci
 npm.cmd run build
+npm.cmd run verify:sepolia
+npm.cmd run start:sepolia -- --live
+```
+
+The last command is for this *already validated* local connector: it checks recorded real-card verification, its matching agent key and the local flags before enabling payment. On a fresh setup use `npm.cmd run start:sepolia` first; that launches **with execution disabled**. Never set approval flags merely to skip the real client test.
+
+In a second PowerShell window, only if the assigned tunnel is offline and the connector is deliberately in live mode:
+
+```powershell
+cd D:\AIChainPay
+.\scripts\start-stable-ngrok.ps1 -PublicBaseUrl https://upscale-nanometer-duvet.ngrok-free.dev -AllowLiveConnector
+```
+
+The script prompts for the ngrok token locally without printing it. Leave both windows open. Check [public health](https://upscale-nanometer-duvet.ngrok-free.dev/health) before using the [public dashboard](https://upscale-nanometer-duvet.ngrok-free.dev). The ChatGPT OAuth issuer and MCP URL must have that same HTTPS origin. The local `http://127.0.0.1:3000` page is useful for diagnostics but is not the public OAuth origin. **Ngrok is only an HTTPS route to this laptop**; a stable hosted HTTPS connector could replace it. Without either, ChatGPT cannot call a localhost-only MCP server.
+
+### A different person using their own wallet
+The operator keeps the connector and HTTPS route running. The new user opens the public dashboard, connects a **MetaMask EOA** on Sepolia, and clicks **Verify wallet** to sign the SIWE *login message* (no transaction or spending authority). Their initial vault balance and grant are zero. To send a chat payment, they deposit a small amount of **Sepolia test ETH** into their own vault credit; this owner-signed transaction moves that test ETH from the ordinary wallet into the vault contract, where it remains withdrawable unless spent. Next they sign their own bounded grant to the displayed agent address: total allowance, per-payment cap and expiry are required; the recipient list is optional (blank allows any valid address). **That grant authorizes the agent to spend deposited credit up to those limits, including future deposits until expiry or revoke; it does not expose the wallet key.** Both on-chain actions cost wallet gas. They then install the custom MCP plugin in ChatGPT with server URL `https://upscale-nanometer-duvet.ngrok-free.dev/mcp`, choose OAuth, complete wallet-linked authorization, and refresh tools. Their ChatGPT account and grant are separate from the original owner's. A new user should confirm the agent has sufficient Sepolia ETH for gas; funding the agent is an operator action, not a deposit into the user's vault.
+
+In ChatGPT, first ask: “Use AIChainPay only to call `get_supported_network`, `get_wallet_address`, `get_contract_balance`, and `get_agent_permission`. Do not prepare a payment.” For a real transfer, provide a recipient you control and a small amount within *your own* limits, then ask for `prepare_payment` followed by `show_payment_confirmation` with the returned request ID/digest. Inspect the exact live card and click **Confirm** only if you intend that vault transfer. `prepare_payment` alone sends no ETH. Do not ask the model to call legacy `execute_payment`; the live card adapter refuses model-initiated execution. A separate `get_request_status` call reports the receipt; a spinning card is not a reason to click twice.
+
+### Fresh operator installation on another computer
+1. Install Node.js >=22.13, clone/copy this repository, then run `npm.cmd ci` and `npm.cmd run build` from its root. The [manifest](./packages/shared/src/deployment.11155111.json) already identifies the Sepolia vault.
+2. Copy [.env.example](./.env.example) to an ignored local `.env` and enter a Sepolia RPC URL **locally**. The deployer key is not needed to reuse this deployment. Run `npm.cmd run verify:sepolia`.
+3. Obtain a stable public HTTPS origin (assigned ngrok hostname or your own host). Run `npm.cmd run setup:sepolia-connector -- https://YOUR-HTTPS-ORIGIN` **once**. The script checks chain/bytecode, writes ignored [connector configuration](./connector/.env.example) and generates a *new* local agent key. Do not overwrite an existing connector configuration or copy private keys from chat. The new agent needs test ETH for gas, and each owner must grant **that new agent**; the old grant does not transfer to a new agent.
+4. Start disabled with `npm.cmd run start:sepolia`; expose the configured HTTPS origin and test OAuth/read tools plus verification-only Confirm and Reject. Live startup is gated by those real-host records and local configuration, as described in [client integration](./docs/client-integration.md). A fresh database cannot inherit the old laptop's ChatGPT approval evidence. The assigned ngrok hostname is account-specific; it is not automatically available on another computer.
+
+Never commit `.env`, agent keys, OAuth signing keys, SQLite data, tokens or raw signed transactions. Do not use mainnet funds. Claude has not been verified.
+
+## Tests and builds
+```powershell
 npm.cmd test
+npm.cmd run build
+npm.cmd run test:payment-card
+npm.cmd run verify:sepolia
+npm.cmd run check:git-safety
 ```
+Latest: **9 contract tests, 12 backend tests passed**, full build passed (non-fatal frontend chunk-size warning). Browser card test passed under a synthetic MCP Apps host: no automatic approval, trusted interaction handling, exact argument binding, safe memo rendering, confirm/reject and mobile layout. This is NOT real ChatGPT evidence.
 
-`npm.cmd run check:frontend` checks frontend types separately. The build includes contract compilation, connector type checking and a production frontend bundle. It does not prove any live chat or Sepolia behavior.
+On 2026-10-20, a fresh source-only temporary copy with no private configuration also passed `npm.cmd ci --no-audit --no-fund`, the full build and all 21 tests. Dependency installation reported transitive deprecations; the forced-ETH contract test fixture reported a selfdestruct warning. These were not build failures.
 
-## Reproduce the local-chain demo
-
-The local chain uses simulated ETH only. The development chain exposes **public deterministic test keys**; never use them on Sepolia or hold real funds with them. Open three PowerShell terminals in `D:\AIChainPay`:
-
+With the existing separate local chain on 31337:
 ```powershell
-# Terminal 1 — leave running
-npm.cmd run chain
-```
-
-```powershell
-# Terminal 2 — deploy to that running chain
-npm.cmd run deploy:local
-```
-
-Copy [connector/.env.example](./connector/.env.example) to `connector/.env` and change these local-only fields to match the deployment manifest: `SEPOLIA_RPC_URL=http://127.0.0.1:8545`, `CHAIN_ID=31337`, `ALLOW_LOCAL_CHAIN=1`, `CONTRACT_ADDRESS=<local address>`, `CONTRACT_CODE_HASH=<local codeHash>`, `CONTRACT_DEPLOYMENT_BLOCK=<local block>`, `AGENT_ADDRESS=<a local test account address>`, `PUBLIC_BASE_URL=http://localhost:3000`, `OAUTH_ISSUER=http://localhost:3000`, and `CONFIRMATION_ADAPTER=disabled`. Set `SESSION_SECRET` to at least 32 random characters. On Windows, this command puts a random value on your local clipboard without printing it; paste it into your local ignored `.env` file, never into chat:
-
-```powershell
-$bytes = New-Object byte[] 32
-$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-$rng.GetBytes($bytes)
-[Convert]::ToBase64String($bytes) | Set-Clipboard
-$rng.Dispose()
-[Array]::Clear($bytes, 0, $bytes.Length)
-```
-
-For the local demo only, a Hardhat test account address may be used as `AGENT_ADDRESS` while execution stays disabled. Do **not** put a Hardhat key into Sepolia configuration. The local browser smoke script injects a test provider; a manual MetaMask run requires you to add local RPC `http://127.0.0.1:8545`, chain ID `31337`, and a disposable local test account in MetaMask. Confirm the URL and chain before signing; the login signature only authenticates your address, whereas deposit/grant transactions move simulated ETH or authorize a capped agent to spend your local vault credit.
-
-```powershell
-# Terminal 3 — connector serves API, MCP and the built frontend at one origin
-npm.cmd run dev:connector
-```
-
-Open `http://localhost:3000`. To edit the UI with hot reload, use a fourth terminal with `npm.cmd run dev:frontend` and open Vite's displayed local URL; its API proxy points at port 3000. The backend reads `connector/.env`; deployment tooling reads root `.env`. These are ignored by Git. Do not reuse the local-chain setup for a real wallet or public endpoint.
-
-With the chain, local deployment and connector running, optional integration checks are:
-
-```powershell
-npm.cmd run test:local-mcp
-npm.cmd run test:local-ui
+npm.cmd run test:local-card-execution
 npm.cmd run test:local-execution
 ```
+Both passed. The card pipeline test verified a real local-chain transfer of 0.0001 ETH, exact recipient increase, matching receipt/event, idempotent retry, rejection, over-limit failure and revocation. The older controlled-stub test verified concurrent nonces and crash recovery. Neither proves a Sepolia/chat transfer. These scripts explicitly refuse non-local chain execution.
 
-The MCP check runs a local SIWE/OAuth/PKCE client and verifies the execution-disabled path. The UI check launches headless Microsoft Edge using a local test provider, performs real local-chain deposit/grant actions, and updates the screenshot. The execution check uses a fresh disposable agent signer and a controlled approval stub to test exact recipient transfer, declines, nonce uniqueness, retry and crash recovery. **None is evidence of ChatGPT approval or Sepolia deployment.** The local tests assume the standard first Hardhat deployment address; restart/deploy as above if the chain was reset.
+For isolated local-chain execution checks, use a **separate checkout** with no Sepolia credentials. Run `npm.cmd ci` and `npm.cmd run build`, then `npm.cmd run chain` in one terminal. In another terminal in that checkout, run `npm.cmd run deploy:local`, followed by the two local execution-test commands above. These tests connect directly to localhost:8545 and need no public tunnel or ChatGPT connection. The local deployment manifest must be regenerated after restarting the chain. Never use local deterministic keys on Sepolia or overwrite this workspace's Sepolia configuration.
 
-When you restart a fresh local chain, use a new ignored `DATABASE_PATH` (or deliberately reset only the old local-test database) so old local-chain event cursors are not mistaken for the new chain. Do not reset a Sepolia database this way.
+## Actual evidence
+- Owner [0.001 ETH deposit](https://sepolia.etherscan.io/tx/0x6106e7761ffba3cb274847d843b3e39fff9f58f03b9779fdda1eb458f9801ada): receipt, vault event, value and credited balance verified, block 11948665.
+- Owner [grant](https://sepolia.etherscan.io/tx/0x1c5c4491b3571a0cb5464d80305ae28438a54daccfd77d77f4d596fe1838570f): vault event and live permission verified, block 11948713. Owner accepted 0.005 ETH total / 0.001 ETH per payment / unrestricted recipients, expiry 2026-10-20 14:17:49 UTC. The outer transaction uses a different routing contract; direct vault calldata verification was not claimed.
+- After the live payment, owner vault credit was 0.0209 ETH and grant allowance 0.0049 ETH; additional deposits beyond the recorded one were not individually audited. Agent gas was funded by [direct owner-to-agent transaction](https://sepolia.etherscan.io/tx/0x4e14c2530a67a557f5160b2d12bcc0397433b0d94af6a2ca212378595836700b) for 0.001 ETH; balance and block delta were checked.
+- Real ChatGPT Sepolia reads, preparations, verification-only approval/rejection, and a live-mode approval are recorded. The [first live payment](https://sepolia.etherscan.io/tx/0x2bfe8bfc442c084cc012fed2b345044819bad1a11dfef682fea7a7e0cbff01cf) succeeded in block 11952073: exact 0.0001 ETH recipient increase, matching event, owner credit decrease and allowance decrease. Authenticated MCP status returned `confirmed`; the user later saw 38 confirmations in ChatGPT. A separate authenticated 0.002 ETH preparation exceeded the earlier 0.001 ETH cap and was refused without a transaction.
+- The owner later [revoked](https://sepolia.etherscan.io/tx/0x1e8d94f28b434eb393d8e16e830bdd52cb28b7ccc6ceeddd9fcbf7d72) and [regranted](https://sepolia.etherscan.io/tx/0x5759f2a59d21ad4e1842cb3c07eff8a1e205498d7ebd08bc8c908612e93e4526). A read-only simulation during the revoked interval returned `PermissionInactive`; no reverted agent transaction was broadcast. The newer grant's limits/expiry must be read afresh before each demo.
+- Another [0.000232 ETH agent transaction](https://sepolia.etherscan.io/tx/0xce0880e7d03f79a69e190db0b25bcd64fe367b780f3f572bb110006cba20ac62) has a successful receipt and matching vault event. Its local request row had not yet reconciled past `submitted` at the last check, and no independent screenshot of that approval click is available; do not present it as a second fully verified ChatGPT demonstration.
 
-## Sepolia deployment and manual acceptance
+![User-supplied real ChatGPT verification-only approval, no ETH sent](./docs/screenshots/chatgpt-card-verify-approved.png)
 
-See [client integration](./docs/client-integration.md) and [demo script](./docs/demo-script.md) for the exact human steps and evidence to record. Obtain a Sepolia RPC URL, small amounts of Sepolia test ETH for the owner/deployer and the **separate** agent gas account, a public HTTPS URL with persistent SQLite storage, and account access to add a custom remote MCP server. No OpenAI API key is needed for the MCP server. Keep `DEPLOYER_PRIVATE_KEY` and `AGENT_PRIVATE_KEY` in separate ignored local/hosting secrets; never use the MetaMask owner key as either or paste any private key/seed phrase into chat.
+This screenshot matches request `90af5a93-e34e-4c3d-9bf1-2f8039aab8d9` and the backend's verification-mode approval audit. It is not payment evidence. The visible “CSP off” host badge means CSP enforcement was not demonstrated; this remains an educational host-trusted integration.
 
-1. Copy [.env.example](./.env.example) to root `.env`; fill `SEPOLIA_RPC_URL` and a **dedicated deployment-only** key locally. The deploy script uses that key and sends a deployment transaction that costs Sepolia test ETH. Run `npm.cmd run deploy:sepolia`. It prints the actual address, transaction hash, code hash and deployment block, then exports `packages/shared/src/deployment.11155111.json` and the ABI. There is no Sepolia address in this repository yet.
-2. Copy [connector/.env.example](./connector/.env.example) to `connector/.env`. Set chain `11155111`, the actual RPC, manifest address/code hash/deployment block, a **different dedicated** `AGENT_PRIVATE_KEY`, HTTPS `PUBLIC_BASE_URL`/`OAUTH_ISSUER`, persistent `DATABASE_PATH`, random `SESSION_SECRET`, and leave confirmation **disabled**. Never put the deployer key in the connector or agent key in frontend Vite variables. To generate a new agent key on your own machine without displaying it in the terminal, run `node -e "console.log(require('ethers').Wallet.createRandom().privateKey)" | Set-Clipboard` in PowerShell, paste it into your ignored `connector/.env`, then clear the clipboard with `Set-Clipboard -Value ''`. Treat clipboard history as sensitive and keep a secure local backup of the agent key. Start the connector, note its displayed agent address, verify it matches your intended key, and fund that address with a little Sepolia test ETH for gas. Never paste the key into chat.
-3. Copy [frontend/.env.example](./frontend/.env.example) to `frontend/.env` and set the public Sepolia chain and actual address. Run `npm.cmd run build`, then `npm.cmd run dev:connector` for a live connector or `npm.cmd run start -w connector` for a non-watch process behind HTTPS. Keep the host and persistent storage running; a laptop tunnel stops when the laptop/tunnel stops. Hosting cost/availability must be checked independently.
-4. In MetaMask, verify you are on Sepolia, connect the owner address and sign the expiring login message. This signature **only logs in**. Then deposit a small amount and grant the displayed dedicated agent a small total allowance, a smaller per-payment cap, a short expiry and preferably a recipient allowlist. The deposit transaction credits the vault; the grant transaction authorizes that agent to spend up to those limits, including from later deposits until expiry/revocation. Each requires a separate MetaMask signature and test ETH for owner gas.
-5. Add the HTTPS `/mcp` endpoint to ChatGPT if your account/workspace supports custom MCP servers. Complete wallet-linked OAuth in the browser. Verify read tools against actual Sepolia RPC data and run `probe_write_confirmation` to observe the client's harmless write approval. Inspect whether the native confirmation clearly shows the stored payment details for `execute_payment`. **Do not enable** `chatgpt_native` or set `CHATGPT_APPROVAL_TESTED=1` until this has been verified with the actual account/client; those settings are an operator assertion, not server-verifiable evidence of a click. If the client cannot provide an adequate in-chat approval, leave execution disabled and document the blocker. Do not substitute website approval or autonomous execution.
-6. Only after that gate, test a tiny prepared transfer in chat, approve it there, check the receipt and exact recipient balance, test decline/no broadcast and over-limit refusal, and revoke with MetaMask. The routine payment itself should not return to the website or request a MetaMask signature. A submitted transaction may require a later `get_request_status` call; no unsolicited chat notification is implemented.
+![Actual Sepolia-configured dashboard, no wallet connected in this capture](./docs/screenshots/sepolia-dashboard-unconnected.png)
 
-The [client integration guide](./docs/client-integration.md) includes prompts and the current ChatGPT/Claude evidence boundary. **No real Sepolia address, explorer verification, chat approval, MetaMask browser run, or GitHub remote URL is claimed yet.** A local Git repository was initialized; publishing a GitHub remote requires user-authorized account access.
+This is a real rendered dashboard reading the deployed Sepolia configuration. It is not a connected MetaMask screenshot or payment proof.
 
-## Important contract and state details
+![Actual confirmation component rendered in a local synthetic host](./docs/screenshots/confirmation-card-local-test.png)
 
-`deposit()` and `withdraw(amount)` adjust owner credit. `grantAgent(agent,totalAllowance,maxPerPayment,expiresAt,allowedRecipients)` replaces a grant and increments its epoch; an empty list means unrestricted recipients within the limits. `revokeAgent(agent)` invalidates the current epoch. `pay(...)` is an optional direct MetaMask owner payment. `executeAgentPayment(...)` is callable by the dedicated agent only and checks owner credit, active grant, epoch, expiry, deadline, caps, allowlist, replay ID and recipient. It sends actual ETH to the recipient. `getBalance`, `getAgentPermission`, `getPaymentCount` and `getPayment` are reads. The actual ABI is in [AIChainPay.abi.json](./packages/shared/src/AIChainPay.abi.json).
+This second screenshot is a real browser render of the implemented card with explicitly labelled synthetic test data; it is NOT a ChatGPT screenshot.
 
-An MCP payment moves through `prepared → confirming → signing → signed → submitted → confirmed` where possible; decline/cancel/expiry/revert/reconciliation states are distinct. Confirmation depth is configurable and is not finality. Signed bytes are encrypted in local SQLite and persisted before broadcast; use one backend writer and do not use the agent account outside this app while it is operating. Event history is scoped to this vault and may report that indexing is catching up. The browser dashboard is for setup/inspection, not per-payment approval.
+## Repository and submission
+[Contract](./contracts/AIChainPay.sol) · [Frontend](./frontend/src/App.tsx) · [MCP server](./connector/src/mcp/server.ts) · [Confirmation service](./connector/src/payments/chat-approval.ts) · [Execution pipeline](./connector/src/payments/execute.ts) · [Public deployment manifest](./packages/shared/src/deployment.11155111.json)
+
+[Implementation status](./IMPLEMENTATION_STATUS.md) · [Demo script](./docs/demo-script.md) · [GitHub checklist](./docs/github-submission.md) · [Detailed technical walkthrough PDF](./AIChainPay_Technical_Walkthrough.pdf)
+
+No GitHub remote/publication exists yet, and GitHub CLI is not installed. CI configuration is included but has not run on GitHub. Local secret scans do not replace review of staged files/screenshots. Do not commit environments, keys, OAuth databases, signed transactions or tunnel credentials.
+
+## Post-demo shutdown
+1. In the dashboard, **Revoke agent** with owner MetaMask; this invalidates spending permission once mined. Wait and verify the inactive grant. This cannot undo earlier or already-pending payments.
+2. Optionally **Withdraw** remaining credited vault ETH using owner MetaMask; this returns funds to the owner and costs gas.
+3. Disconnect AIChainPay in ChatGPT and log out of the dashboard. OAuth logout alone does not revoke the on-chain grant.
+4. Stop the backend and ngrok. Keep keys/database protected, especially if a signed transaction is unresolved.
+
+This is educational testnet infrastructure, not audited, production-ready or PayBox-equivalent custody.
+#   A I C h a i n P a y  
+ 

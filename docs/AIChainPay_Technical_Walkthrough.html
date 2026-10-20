@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AIChainPay — Technical Walkthrough</title>
+<style>
+@page { size: A4; margin: 18mm 16mm 17mm; }
+* { box-sizing: border-box; }
+body { font: 10.5pt/1.45 Arial, Helvetica, sans-serif; color: #17243a; margin: 0; }
+h1,h2,h3 { color: #112c55; line-height: 1.15; break-after: avoid; }
+h1 { font-size: 27pt; margin: 0 0 10mm; }
+h2 { font-size: 17pt; margin: 9mm 0 3mm; border-bottom: 1px solid #c7d7ed; padding-bottom: 2mm; }
+h3 { font-size: 11.5pt; margin: 5mm 0 2mm; }
+p,li { margin: 0 0 2.5mm; }
+ul,ol { padding-left: 6mm; }
+table { border-collapse: collapse; width: 100%; margin: 3mm 0 5mm; font-size: 8.3pt; table-layout: fixed; }
+th,td { border: 1px solid #cbd5e1; padding: 2mm; vertical-align: top; overflow-wrap: anywhere; }
+th { background: #e9f1fd; text-align: left; }
+tr { break-inside: avoid; }
+code,pre { font-family: Consolas, 'Courier New', monospace; font-size: 8.5pt; overflow-wrap: anywhere; }
+pre { white-space: pre-wrap; background: #eef4fb; padding: 3mm; border-left: 3px solid #2769ba; break-inside: avoid; }
+.cover { padding-top: 33mm; min-height: 210mm; }
+.eyebrow { color: #137c92; font-weight: bold; text-transform: uppercase; letter-spacing: .1em; }
+.lede { font-size: 14pt; color: #3b4c65; max-width: 145mm; }
+.card { border: 1px solid #b4c8e4; background: #f2f7fd; padding: 4mm; border-radius: 2mm; margin: 5mm 0; }
+.warning { border-color: #d2a349; background: #fff9e9; }
+.pagebreak { break-before: page; }
+.small { font-size: 8.5pt; color: #52657e; }
+.pill { color: #006176; font-weight: bold; }
+a { color: #115ea5; text-decoration: none; }
+</style></head><body>
+<section class="cover"><div class="eyebrow">Sepolia testnet • source-backed evaluator guide</div>
+<h1>AIChainPay<br>Technical Walkthrough</h1>
+<p class="lede">From a new MetaMask wallet to an authenticated in-chat vault payment: architecture, code functions, security checks, recorded evidence, startup steps and viva answers.</p>
+<div class="card"><strong>Evidence rule.</strong> “Implemented” means present in source; “local test” means an automated/local-chain result; “Sepolia verified” requires a receipt/event; “ChatGPT verified” requires real-client and connector evidence. These are not interchangeable.</div>
+<p>Prepared from the repository on 20 October 2026. Sepolia only: chain ID <strong>11155111</strong>. Vault <code>0x915fCDd60d648dC9e9F558e84f805C28269E0aAC</code>. All amounts in this guide are test ETH.</p>
+<p class="small">Public addresses, transaction hashes, source paths and commands only. No private keys, tokens, cookies, signed payloads or secret RPC URLs are included. This is an educational testnet project, not audited financial infrastructure.</p></section>
+
+<h2>Contents</h2><ol>
+<li>Problem, goal and fundamentals</li><li>Architecture and account model</li><li>Owner setup, balance read and payment execution</li><li>Solidity contract: every callable function and check</li><li>Frontend, backend, OAuth, database and signer functions</li><li>MCP tools, card approval and payment states</li><li>Failures, trust boundaries and security</li><li>Running and demonstrating the system</li><li>Tests, Sepolia receipts and requirement evidence</li><li>Presentation, viva questions, glossary and claims to avoid</li></ol>
+
+<h2>1. Problem, goal and fundamentals</h2>
+<p>A blockchain transaction normally needs an account's private-key signature. In a conventional DApp, a user revisits the website and approves every payment in MetaMask. An AI chat cannot safely or legitimately possess the owner's MetaMask key. AIChainPay therefore separates <em>one-time owner authorization</em> from <em>routine bounded payment execution</em>.</p>
+<p>The owner deposits small Sepolia test ETH into a Solidity vault and signs a grant for a separate agent address. That grant has an aggregate allowance, per-payment cap, expiry and optional recipient list. The owner can revoke it. A ChatGPT user authenticates as that wallet through SIWE and OAuth, asks MCP tools to prepare a payment, reviews an exact in-chat card and clicks Confirm. The agent signs the resulting vault call and pays gas. The contract, not the AI model, independently enforces the grant. Routine approval does not return to the website.</p>
+<p><strong>Terminology:</strong> an EOA is a private-key-controlled account; wei is the smallest ETH unit (10<sup>18</sup> wei = 1 ETH); gas pays transaction computation; a smart contract is public on-chain code; an ABI tells ethers.js how to encode calls and decode events; a receipt proves a transaction was mined, while a prepared preview does not.</p>
+<div class="card warning"><strong>Not PayBox itself.</strong> This is a PayBox-inspired experience using a Solidity vault and dedicated agent signer. It does not use PayBox custody/MPC infrastructure. It never transfers routine payments directly from the owner's ordinary MetaMask balance.</div>
+
+<h2>2. Architecture, identities and multi-user behavior</h2>
+<pre>Owner MetaMask ─ connect/SIWE ─▶ React dashboard ─ HTTPS ─▶ Connector + SQLite
+       │                              │                    ▲
+       ├─ deposit/grant/revoke ───────┼──────────▶ Sepolia vault
+       │                              │                    ▲
+       └─ no owner key in backend     └─ read views       │ agent-signed call
+                                                         │
+ChatGPT ─ OAuth/PKCE ─▶ /mcp tools ─ prepare/card/click ─▶ signer
+Sepolia vault ─ ETH transfer + PaymentExecuted event ─▶ recipient</pre>
+<p><strong>Owner:</strong> signs login message and setup transactions in MetaMask. <strong>Deployer:</strong> signed the one-time contract deployment; it has no privileged user-spending role. <strong>Agent:</strong> one configured backend signer, paid Sepolia ETH for gas, can spend only a given owner's deposited credit under that owner's on-chain grant. <strong>Recipient:</strong> receives actual ETH from the vault, not from ChatGPT or from the agent wallet.</p>
+<p>The deployed contract is <strong>not hard-coded to the original wallet</strong>. In <code>contracts/AIChainPay.sol</code>, <code>balances[msg.sender]</code> credits each depositor, and <code>permissions[owner][agent]</code> separates grants. <code>connector/src/auth/siwe.ts</code> accepts any valid supported EOA signature, creates that wallet's session, and <code>connector/src/payments/prepare.ts</code> scopes requests to the authenticated owner and OAuth client. A second person can use the same contract and hosted connector with their own MetaMask EOA, but starts with zero vault credit and no grant. They must deposit their own test ETH and authorize the configured agent. A smart-contract wallet is rejected by v1 SIWE login. The Solidity suite includes a positive second-owner deposit/grant/agent-payment case and checks the first owner's credit is unchanged. The second person's full browser/chat workflow was not separately manually demonstrated.</p>
+<table><tr><th>Technology</th><th>Why it is used</th><th>Live requirement?</th></tr>
+<tr><td>Solidity + OpenZeppelin ReentrancyGuard</td><td>Public, immutable vault spending checks and reentrancy protection.</td><td>Yes, deployed Sepolia bytecode.</td></tr>
+<tr><td>ethers.js</td><td>MetaMask BrowserProvider, RPC reads, contract calls, agent signing, event decoding.</td><td>Yes.</td></tr>
+<tr><td>Hardhat</td><td>Compilation, local chain, tests and deployment.</td><td>Build/deploy tool; local chain not needed for live Sepolia demo.</td></tr>
+<tr><td>React + Vite</td><td>Owner setup/dashboard; connector serves its built output.</td><td>Built UI yes; separate Vite dev server no.</td></tr>
+<tr><td>SIWE + OAuth/PKCE</td><td>Owner message-signature login versus chat-client API access. Neither is an on-chain grant.</td><td>Yes.</td></tr>
+<tr><td>MCP + MCP Apps card</td><td>ChatGPT reads, preparation, exact in-chat Confirm/Reject and status.</td><td>Yes for chat flow; Claude unverified.</td></tr>
+<tr><td>SQLite</td><td>Sessions, OAuth, immutable requests, one-use card capabilities, nonce journal, audit and event index.</td><td>Yes; persistent private data.</td></tr>
+<tr><td>HTTPS/ngrok</td><td>Gives cloud ChatGPT a reachable local /mcp and matching OAuth origin.</td><td>Public HTTPS required; ngrok is replaceable with stable hosting.</td></tr></table>
+
+<h2>3. Exact end-to-end journeys</h2>
+<h3>3.1 Owner setup</h3>
+<table><tr><th>Step and code</th><th>Input and output</th><th>Signer / writes</th></tr>
+<tr><td><code>connect()</code> in <code>frontend/src/App.tsx</code></td><td><code>eth_requestAccounts</code> → selected public wallet and chain.</td><td>No chain transaction or SQLite write.</td></tr>
+<tr><td><code>login()</code> → <code>POST /api/auth/challenge</code> → <code>createChallenge()</code></td><td>Owner address → SIWE message, one-use nonce, five-minute expiry.</td><td>SQLite challenge write; no transaction.</td></tr>
+<tr><td><code>signMessage()</code> → <code>POST /api/auth/verify</code> → <code>verifyLogin()</code></td><td>Exact message and wallet signature → HttpOnly browser session, CSRF token.</td><td>Owner signs a message; SQLite consumes nonce and stores hashed session. No ETH moves.</td></tr>
+<tr><td><code>deposit()</code> → contract <code>deposit()</code></td><td>Positive ETH value → owner vault credit and <code>Deposited</code> event.</td><td>Owner MetaMask transaction on Sepolia; no agent authority implied.</td></tr>
+<tr><td><code>grant()</code> → contract <code>grantAgent()</code></td><td>Agent, total, maximum, expiry, optional addresses → new permission epoch and event.</td><td>Owner MetaMask transaction on Sepolia. Blank list permits any otherwise valid recipient.</td></tr></table>
+<h3>3.2 Chat balance read</h3>
+<p>ChatGPT connects to the public HTTPS <code>/mcp</code> via OAuth. The connector's <code>createOAuthProvider()</code> handles authorization code + PKCE and wallet-linked consent; <code>verifyBearer()</code> checks token expiry, audience and scope on every MCP request. <code>createMcpServer()</code> binds tools to the token's owner. <code>get_contract_balance</code> calls <code>ChainService.balance(owner)</code>, which reads contract <code>getBalance(owner)</code>. A JSON result returns wei/ETH. The connector writes an <code>mcp_request</code> audit row in SQLite; the balance itself is read from Sepolia and no transaction is sent. <code>get_native_balance</code> is different: it reads ordinary wallet ETH.</p>
+<h3>3.3 Chat payment</h3>
+<table><tr><th>Step and code</th><th>Input → output</th><th>Signer / state</th></tr>
+<tr><td><code>prepare_payment</code> → <code>preparePayment()</code></td><td>Recipient, decimal amount, memo, client request ID → UUID, bytes32 ID, digest, deadline and exact preview.</td><td>No signer/transaction. Reads Sepolia permission/balance; inserts immutable SQLite request.</td></tr>
+<tr><td><code>show_payment_confirmation</code> → <code>issueChatApproval()</code></td><td>UUID + digest → in-chat UI resource and private random capability.</td><td>No ETH. SQLite stores only capability hash, owner/client/digest/mode/expiry.</td></tr>
+<tr><td>Card click → <code>confirm_payment_card</code> → <code>decideChatApproval()</code></td><td>Exact UUID/digest, capability, approve/reject → one-use decision.</td><td>SQLite decision/audit. Reject or verify-only mode broadcasts nothing.</td></tr>
+<tr><td><code>ExecutionService.execute()</code> and <code>signAndBroadcast()</code></td><td>Live decision → preflight, encoded call, signed transaction/hash.</td><td>Agent signs; SQLite CAS, nonce and encrypted signed bytes persisted before Sepolia broadcast.</td></tr>
+<tr><td>Contract <code>executeAgentPayment()</code></td><td>Owner/recipient/amount/memo/request ID/epoch/deadline → recipient ETH and event.</td><td>Agent pays gas; vault's owner credit and allowance decrease on Sepolia.</td></tr>
+<tr><td><code>get_request_status</code> → <code>status()</code>/<code>reconcile()</code></td><td>UUID → persisted state, receipt hash, confirmation count, explorer URL.</td><td>No new payment; Sepolia receipt read and SQLite reconciliation.</td></tr></table>
+
+<h2>4. Solidity contract function-by-function</h2>
+<p>Source: <code>contracts/AIChainPay.sol</code>; exported interface: <code>packages/shared/src/AIChainPay.abi.json</code> and <code>packages/shared/src/index.ts</code>. The actual ABI names below are the deployed design.</p>
+<table><tr><th>Function / state</th><th>Plain-language behavior and checks</th></tr>
+<tr><td><code>receive()</code>, <code>fallback()</code></td><td>Reject an ordinary direct ETH send or unknown call. ETH can still be forcibly sent at EVM level; forced surplus does not create a user's credit.</td></tr>
+<tr><td><code>deposit()</code></td><td>Payable, requires nonzero <code>msg.value</code>; credits <code>balances[msg.sender]</code>, increases <code>totalLiabilities</code>, emits <code>Deposited</code>. No special owner address exists.</td></tr>
+<tr><td><code>withdraw(amount)</code></td><td>Owner withdraws their own credited ETH, nonzero and not beyond balance. Decrements accounting before transfer; reverts on failed transfer; protected by <code>nonReentrant</code>.</td></tr>
+<tr><td><code>getBalance(owner)</code> / public <code>balances(owner)</code></td><td>Read per-owner vault credit; anyone can read public chain state, but only the owner controls withdrawal/grant.</td></tr>
+<tr><td><code>grantAgent(agent,totalAllowance,maxPerPayment,expiresAt,recipients)</code></td><td>Caller grants their own funds only. Agent cannot be zero/vault/self; total and max positive, max ≤ total; expiry must be future; ≤20 distinct valid recipients. Replaces grant, increments epoch, emits <code>AgentGranted</code>. Empty list means unrestricted recipients.</td></tr>
+<tr><td><code>revokeAgent(agent)</code></td><td>Caller invalidates their grant to that agent: advances epoch, sets inactive/zero limits and emits <code>AgentRevoked</code>. A later grant is possible; old requests with old epoch remain stale.</td></tr>
+<tr><td><code>getAgentPermission(owner,agent)</code></td><td>Read active flag, remaining allowance, maximum, expiry, epoch and recipient policy.</td></tr>
+<tr><td><code>isAllowedRecipient(owner,agent,recipient)</code></td><td>Read whether current epoch's list permits recipient; if unrestricted, returns true. Other payment checks still apply.</td></tr>
+<tr><td><code>pay(recipient,amount,memo,requestId)</code></td><td>Optional direct owner-signed payment from their vault credit. Not the AI path. Calls the shared validation/execution code and is non-reentrant.</td></tr>
+<tr><td><code>executeAgentPayment(owner,recipient,amount,memo,requestId,permissionEpoch,requestDeadline)</code></td><td>Agent-only delegated route: active grant for <code>(owner,msg.sender)</code>, current time before grant expiry, matching epoch, request not past deadline, valid payment, amount within max and remaining allowance, recipient allowed. Decrements allowance, then executes; non-reentrant.</td></tr>
+<tr><td><code>_validatePayment(...)</code></td><td>Requires positive amount; recipient not zero, vault or owner; nonzero unused bytes32 request ID; memo ≤140 UTF-8 bytes; enough owner vault credit.</td></tr>
+<tr><td><code>_execute(...)</code></td><td>Deducts owner credit/liabilities, marks request ID used, stores payment/participant indexes, calls recipient with exact ETH, reverts if transfer fails, emits <code>PaymentExecuted</code>. A revert rolls all preceding changes back.</td></tr>
+<tr><td><code>getPaymentCount(participant)</code>, <code>getPayment(participant,index)</code></td><td>Read recorded payments involving an owner/recipient; out-of-range index reverts. Not full wallet history.</td></tr></table>
+<p><strong>Public getters:</strong> <code>totalLiabilities()</code>, <code>usedRequestIds(owner,id)</code>, <code>MAX_MEMO_BYTES()</code> and <code>MAX_ALLOWED_RECIPIENTS()</code> are compiler-generated for public state/constants. Event and account data are public on Sepolia; do not put secrets in memos.</p>
+
+<h2 class="pagebreak">5. Application function catalogue</h2>
+<p>This catalogue covers production runtime functions and helpers, not test-fixture methods or third-party library internals. A file path plus function name identifies the exact source. The application uses <code>ethers.js</code> v6, TypeScript, React and Express.</p>
+<h3>5.1 Shared validation — <code>packages/shared/src/index.ts</code></h3>
+<table><tr><th>Function or constant</th><th>Purpose</th></tr>
+<tr><td><code>SEPOLIA_CHAIN_ID</code>, <code>LOCAL_CHAIN_ID</code>, <code>EXPLORER_BASE_URL</code></td><td>Define accepted live/test chain identifiers and public explorer base.</td></tr>
+<tr><td><code>VAULT_ABI</code></td><td>Human-readable interface consumed by frontend and connector; a full JSON ABI is exported separately.</td></tr>
+<tr><td><code>parseAmountEth(value)</code></td><td>Accepts plain positive decimal ETH with at most 18 fractional digits; calls ethers <code>parseEther</code>; rejects scientific notation, zero and malformed input.</td></tr>
+<tr><td><code>normalizeAddress(value)</code></td><td>Requires exact 20-byte hexadecimal address, applies checksum with ethers <code>getAddress</code>; ENS is unsupported.</td></tr>
+<tr><td><code>validateMemo(value)</code></td><td>Enforces 140 UTF-8 bytes, matching the contract (not merely 140 characters).</td></tr></table>
+<h3>5.2 Dashboard — <code>frontend/src/App.tsx</code></h3>
+<table><tr><th>Function / state</th><th>Purpose</th></tr>
+<tr><td><code>eth()</code>, <code>provider()</code></td><td>Locate injected MetaMask provider, wrap it in ethers <code>BrowserProvider</code>.</td></tr>
+<tr><td><code>api(path,init)</code></td><td>Credentialed JSON HTTP wrapper; propagates backend error messages.</td></tr>
+<tr><td><code>short()</code>, <code>displayEth()</code>, <code>formatDate()</code>, <code>errorText()</code>, <code>Address()</code></td><td>Formatting and address copy/explorer display; shortened addresses are display-only, not transaction inputs.</td></tr>
+<tr><td><code>refreshWallet()</code></td><td>Reads selected account/chain without prompting; clears wallet state when MetaMask absent.</td></tr>
+<tr><td><code>refreshData()</code></td><td>Only when SIWE session matches selected wallet: fetches owner-scoped dashboard, vault events and prepared requests; clears these on mismatch.</td></tr>
+<tr><td>React effects</td><td>Load public config and current session; subscribe to account/chain changes; refresh data; resume same-origin OAuth interaction return.</td></tr>
+<tr><td><code>act(label,fn)</code></td><td>Common busy/error/notice wrapper for UI operations, then refreshes data.</td></tr>
+<tr><td><code>connect()</code>, <code>switchNetwork()</code></td><td>Request MetaMask account; switch to configured chain. Automatic network-add fallback is local-chain-only.</td></tr>
+<tr><td><code>signer()</code></td><td>Reject wrong chain or changed account; returns selected MetaMask signer. The connector never receives this key.</td></tr>
+<tr><td><code>login()</code></td><td>Get SIWE challenge, sign message in MetaMask, verify with backend; no blockchain transaction.</td></tr>
+<tr><td><code>ownerTx(label,fn)</code></td><td>Construct ethers vault contract with owner signer, send selected transaction, wait for receipt.</td></tr>
+<tr><td><code>deposit()</code>, <code>withdraw()</code></td><td>Strict ETH conversion; owner-signed vault credit/withdrawal transactions.</td></tr>
+<tr><td><code>grant()</code></td><td>Parse total/cap, require cap ≤ total, integer expiry 1–720 hours, at most 20 distinct optional recipients, then call <code>grantAgent</code>.</td></tr>
+<tr><td><code>revoke()</code>, <code>directPay()</code></td><td>Owner-signed grant revocation; optional direct owner vault transfer with fresh random bytes32 ID. Direct pay is not chat execution.</td></tr>
+<tr><td><code>logout()</code></td><td>Clears browser session via CSRF-protected API; explicitly does not revoke chain grant.</td></tr>
+<tr><td><code>vaultReady</code>, <code>chatActivityObserved</code>, <code>completedSetupSteps</code></td><td>Four-step display now derives from this wallet's connection, SIWE session, funded unexpired grant and owner-scoped authenticated MCP-request record. Activity means “observed historically,” not “token currently valid.”</td></tr></table>
+<h3>5.3 Connector startup, routes and chain reads</h3>
+<table><tr><th>Code location / function</th><th>Purpose and writes</th></tr>
+<tr><td><code>connector/src/config.ts:loadConfig()</code>, <code>required()</code></td><td>Validate Sepolia/default chain, HTTPS issuer/origin, RPC, bytecode hash, adapter gating, secret length, TTL and agent key. Local 31337 requires explicit test flag.</td></tr>
+<tr><td><code>connector/src/db/index.ts:openDatabase()</code>, <code>migrate()</code></td><td>Open SQLite with WAL, foreign keys, busy timeout; create/migrate tables. This modifies only local DB.</td></tr>
+<tr><td><code>connector/src/blockchain/index.ts:ChainService()</code>, <code>check()</code></td><td>Create RPC provider/vault interface; verify chain ID, nonempty code, memo identity and expected code hash before service/execution.</td></tr>
+<tr><td><code>ChainService.balance()</code>, <code>permission()</code>, <code>allowed()</code></td><td>Read owner credit, owner-agent grant and current recipient policy from Sepolia; no chain writes.</td></tr>
+<tr><td><code>connector/src/blockchain/indexer.ts:PaymentIndexer.sync()</code>, <code>syncNow()</code></td><td>Read <code>PaymentExecuted</code> logs from deployment block in bounded 1,000-block ranges, rescan a 12-block overlap for shallow reorgs, store events/cursor in SQLite.</td></tr>
+<tr><td><code>PaymentIndexer.recentFor()</code></td><td>Return owner/recipient-scoped vault events with cursor and explorer URL; not all wallet transactions.</td></tr>
+<tr><td><code>connector/src/index.ts:main()</code></td><td>Assemble config, DB, chain, indexer, signer service, OAuth and MCP server; validate chain, recover pending signed payments in live mode, serve built frontend on port 3000.</td></tr>
+<tr><td><code>cookie()</code>, <code>session()</code>, <code>originGuard()</code>, <code>csrfGuard()</code>, <code>escapeHtml()</code></td><td>Parse session cookie, load hashed session, reject foreign browser origins/CSRF, escape OAuth interaction HTML. Diagnostic logging redacts sensitive redirect path IDs/query values.</td></tr>
+<tr><td><code>GET /health</code>, <code>GET /api/config</code></td><td>Read-only readiness and public network/vault/MCP configuration. Never expose keys.</td></tr>
+<tr><td><code>POST /api/auth/challenge</code>, <code>/verify</code>, <code>GET /api/auth/me</code>, <code>POST /logout</code></td><td>Create/consume SIWE challenge, set secure HttpOnly cookie on HTTPS, show or end browser session. Challenge/session/audit are SQLite writes; no Sepolia transaction.</td></tr>
+<tr><td><code>GET /api/dashboard</code></td><td>Requires wallet session; reads wallet/vault/agent/grant from chain, recent audit and whether <em>any</em> authenticated MCP request exists for this owner.</td></tr>
+<tr><td><code>GET /api/payments</code>, <code>/api/requests</code></td><td>Owner-scoped indexed vault events and prepared request states; requests endpoint marks expired unsigned intents in SQLite.</td></tr>
+<tr><td><code>/.well-known/oauth-protected-resource*</code>, <code>ALL /mcp</code></td><td>Advertise OAuth resource; verify bearer on each MCP request, record owner audit, run stateless streaming-HTTP transport with owner-bound tools.</td></tr>
+<tr><td><code>GET/POST /interaction/:uid</code></td><td>Wallet-linked OAuth login/consent page, same-origin/CSRF checks and allowed scopes; this is connection authorization, not vault permission.</td></tr></table>
+<h3>5.4 Authentication and persistence</h3>
+<table><tr><th>Function / file</th><th>Purpose</th></tr>
+<tr><td><code>hashSession()</code>, <code>isEoaAccountCode()</code> — <code>connector/src/auth/siwe.ts</code></td><td>Hash browser cookie before storage; permit empty EOA code or EIP-7702 EOA delegation indicator, not arbitrary contract-wallet code.</td></tr>
+<tr><td><code>createChallenge()</code>, <code>verifyLogin()</code>, <code>getBrowserSession()</code> — same file</td><td>Issue one-use SIWE message bound to domain/URI/chain/time; verify EOA signature and nonce atomically; return/lookup 12-hour browser session.</td></tr>
+<tr><td><code>signingKey()</code>, <code>sqliteAdapter()</code> — <code>connector/src/auth/oauth.ts</code></td><td>Persist local OAuth signing JWK privately; map OAuth objects, expiry, consumption and revocation to SQLite.</td></tr>
+<tr><td><code>createOAuthProvider()</code>, <code>verifyBearer()</code> — same file</td><td>Configure OAuth authorization code + PKCE, ChatGPT client metadata, /mcp audience and one-hour token; verify bearer expiry/audience/scope and return owner/client principal.</td></tr>
+<tr><td><code>users</code>, <code>challenges</code>, <code>browser_sessions</code>, <code>oauth_objects</code></td><td>Identity and client connection records in SQLite. Browser cookie is stored only as hash.</td></tr>
+<tr><td><code>payment_requests</code>, <code>chat_approvals</code>, <code>transaction_attempts</code></td><td>Immutable intent/state, hashed one-use card tokens, unique nonce/hash and encrypted signed transaction bytes.</td></tr>
+<tr><td><code>audit_entries</code>, <code>index_cursors</code>, <code>payment_events</code></td><td>Authenticated activity, event-sync progress and on-chain event cache.</td></tr></table>
+
+<h2>6. MCP tools, confirmation and state machine</h2>
+<p>All tools are registered in <code>connector/src/mcp/server.ts:createMcpServer()</code>. ChatGPT receives a wallet-specific principal from <code>verifyBearer()</code>; the model cannot choose a different owner or network through the tools.</p>
+<table><tr><th>MCP tool</th><th>Meaning / on-chain effect</th></tr>
+<tr><td><code>get_wallet_address</code>, <code>get_supported_network</code></td><td>Return authenticated EOA and Sepolia chain; no transaction.</td></tr>
+<tr><td><code>get_native_balance</code>, <code>get_contract_balance</code>, <code>get_agent_permission</code></td><td>Read ordinary wallet ETH, owner vault credit and owner-specific grant; no transaction.</td></tr>
+<tr><td><code>prepare_payment</code></td><td>Validate and persist an off-chain intent. It does not pay.</td></tr>
+<tr><td><code>show_payment_confirmation</code></td><td>Provide exact preview and MCP Apps HTML card, mint a private one-use capability. It does not pay.</td></tr>
+<tr><td><code>confirm_payment_card</code></td><td>App-only Confirm/Reject callback. Verify-mode Confirm records choice/no ETH; Reject sends no ETH; live Confirm can invoke signer.</td></tr>
+<tr><td><code>execute_payment</code></td><td>Legacy model-call tool. In active <code>chatgpt_app</code> mode it refuses execution and directs user to the card. A remembered tool approval is not payment approval.</td></tr>
+<tr><td><code>cancel_payment_request</code></td><td>Cancel owner's own still-prepared intent; SQLite only.</td></tr>
+<tr><td><code>get_request_status</code>, <code>get_transaction</code>, <code>get_recent_transactions</code></td><td>Poll request/receipt, look up a chain transaction, or list scoped vault events. None creates a payment.</td></tr>
+<tr><td><code>probe_write_confirmation</code></td><td>Historical harmless audit-only tool used to inspect generic client write prompts. It never authorizes a payment.</td></tr></table>
+<h3>6.1 Preparation and card function reference</h3>
+<table><tr><th>Function / file</th><th>Exact responsibility</th></tr>
+<tr><td><code>requestForPrincipal()</code>, <code>preview()</code>, <code>assertExecutionDetails()</code> — <code>connector/src/payments/prepare.ts</code></td><td>Scope UUID to owner+OAuth client; make the human-readable immutable preview; compare every legacy execution field to that saved preview.</td></tr>
+<tr><td><code>preparePayment()</code>, <code>cancelPayment()</code> — same file</td><td>Strict address/amount/memo/client ID, idempotency key and conflict check, live grant/balance/recipient check, random bytes32 request ID, ABI-encoded digest, bounded deadline, SQLite insert; cancellation only from prepared state.</td></tr>
+<tr><td><code>requireChat()</code>, <code>currentRequest()</code> — <code>connector/src/payments/chat-approval.ts</code></td><td>Require ChatGPT client ID plus execute scope and the same owner/client/digest; require prepared and unexpired.</td></tr>
+<tr><td><code>issueChatApproval()</code>, <code>decideChatApproval()</code> — same file</td><td>Generate 32-byte random capability, store hash/mode and supersede prior cards; atomically verify token, owner, client, intent, mode and expiry; audit decision/reject request if applicable.</td></tr>
+<tr><td><code>chatAppConfirmation()</code> — same file</td><td>Live adapter consumes exactly one fresh approved execute-mode capability for the same owner/client/digest; otherwise refuses.</td></tr>
+<tr><td><code>PAYMENT_CARD_HTML</code> — <code>connector/src/mcp/payment-card.ts</code></td><td>Renders full amount, recipient, owner, vault, agent, network, memo, deadline, epoch, UUID and digest. Uses text-safe rendering and trusted user-event guard; calls app-only tool, never auto-confirms on render.</td></tr></table>
+<h3>6.2 Signer and recovery function reference — <code>connector/src/payments/execute.ts</code></h3>
+<table><tr><th>Function</th><th>Responsibility</th></tr>
+<tr><td><code>cipherKey()</code>, <code>encryptSigned()</code>, <code>decryptSigned()</code></td><td>Derive a key from persistent session secret; AES-256-GCM encrypt/decrypt raw signed transaction in private SQLite. Changing the secret can break recovery.</td></tr>
+<tr><td><code>ExecutionService()</code>, <code>serialized()</code></td><td>Create wallet only with configured agent key; serialize signing in one process. Deployment assumes one writer/agent nonce stream.</td></tr>
+<tr><td><code>execute()</code></td><td>Check execute scope, owner/client/digest, state and deadline; SQLite compare-and-swap from prepared to confirming; consume confirmation; move to signing or reject before any broadcast.</td></tr>
+<tr><td><code>signAndBroadcast()</code></td><td>Recheck chain/grant/epoch/cap/balance/recipient; static-call simulation, gas estimate and gas balance; choose unique nonce; sign type-2 transaction to vault with zero outer ETH value; persist encrypted bytes/hash/nonce before sending.</td></tr>
+<tr><td><code>broadcastStored()</code></td><td>Broadcast the identical signed bytes. RPC timeout or already-known response is uncertain, not permission to sign a new payment.</td></tr>
+<tr><td><code>status()</code>, <code>reconcile()</code>, <code>setState()</code></td><td>Poll and update state. Reconciliation checks receipt, chain ID, contract, agent, nonce, exact calldata, zero outer value, matching <code>PaymentExecuted</code> fields, block hash and required confirmations; mismatch becomes <code>reconciliation_required</code>.</td></tr>
+<tr><td><code>recover()</code></td><td>At live startup, release expired unsigned claims, expire old intents, reconcile known hashes and rebroadcast identical durable signed bytes if needed.</td></tr>
+<tr><td><code>chatGptNativeConfirmation()</code></td><td>Legacy host-tool-approval trust adapter; not the active card-based payment route. Its own client prompt is not cryptographic proof of a human.</td></tr></table>
+<pre>prepared → confirming → signing → signed → submitted → confirmed
+             ↘ rejected      ↘ preflight failure
+prepared → cancelled or expired
+submitted/confirmed → reverted or reconciliation_required on chain mismatch/reorg</pre>
+<p>A submitted hash is not a confirmed payment. <code>get_request_status</code> must poll; the project does not push unsolicited completion to ChatGPT. A successful HTTP tool response or an AI-written sentence alone is not a receipt.</p>
+
+<h2>7. Safety, failure modes and trust limits</h2>
+<ul><li><strong>Two separate permissions:</strong> OAuth authorizes ChatGPT to call an owner's tools; the Solidity grant authorizes the agent to spend this owner's vault credit. Browser logout or plugin disconnection does not revoke on-chain permission.</li>
+<li><strong>One-use exact confirmation:</strong> the card capability is private UI metadata and stored only hashed. The server binds it to request/digest, owner, OAuth client, mode and deadline. Verify-only approvals cannot become live approvals. The model cannot supply a simple <code>approved:true</code>.</li>
+<li><strong>Human-proof limit:</strong> the host must isolate private metadata and enforce app-only callback visibility. The component's <code>event.isTrusted</code> is not server-verifiable human attestation. A malicious host/backend or stolen full OAuth access may defeat this layer; on-chain allowance/cap/expiry/revocation limit damage.</li>
+<li><strong>Crash/nonce safety:</strong> durable signed bytes and unique nonce prevent a restart from creating another payment for the same request. Do not use the agent key for unrelated transactions while the connector runs. A mismatched/reorganized receipt needs investigation, not blind retry.</li>
+<li><strong>Public data:</strong> recipient, amount, memo and events are public on Sepolia. Do not put secrets in memo. Use only small test funds.</li>
+<li><strong>Revocation:</strong> once mined, it blocks future delegated execution under that grant. It cannot undo completed transfers and cannot guarantee ordering ahead of an already-pending agent transaction. A later grant creates a new epoch.</li>
+<li><strong>Availability:</strong> if backend or tunnel stops, chat tools stop; already-deployed contract and credited ETH remain on Sepolia. A stable HTTPS host can replace ngrok. Local SQLite and agent key must be protected and backed up; copying only Git files to a new machine does not transfer existing OAuth sessions or grant authority to a different agent.</li></ul>
+
+<h2 class="pagebreak">8. Running and demonstrating AIChainPay</h2>
+<h3>8.1 Existing validated Windows workspace</h3>
+<p>Prerequisites: Node.js ≥22.13, npm, this repository with its existing ignored local RPC/connector configuration, assigned ngrok HTTPS hostname and sufficient agent gas. Do not start a second connector on port 3000. The currently deployed contract is reused; no deployment transaction is needed. Run these in PowerShell from the repository:</p>
+<pre>cd D:\AIChainPay
+npm.cmd ci
+npm.cmd run build
+npm.cmd run verify:sepolia
+npm.cmd run start:sepolia -- --live</pre>
+<p>The explicit live switch works only for the already verified local connector: <code>scripts/sepolia-connector.ts</code> requires locally recorded real-host verification approval and rejection, matching agent key and live adapter settings. A new installation must first use <code>npm.cmd run start:sepolia</code>, which forces execution disabled. Never set verification flags merely to bypass the gate.</p>
+<p>In another PowerShell window, only if the tunnel is offline:</p>
+<pre>cd D:\AIChainPay
+.\scripts\start-stable-ngrok.ps1 -PublicBaseUrl https://upscale-nanometer-duvet.ngrok-free.dev -AllowLiveConnector</pre>
+<p>Enter ngrok authentication only in its hidden local prompt. Keep connector and tunnel windows open. Check <code>https://upscale-nanometer-duvet.ngrok-free.dev/health</code>; the dashboard is the same origin and ChatGPT's OAuth MCP URL is <code>https://upscale-nanometer-duvet.ngrok-free.dev/mcp</code>. An unauthenticated /mcp request should return a bearer challenge, not payment data. This assigned hostname belongs to the operator's ngrok account; it is not guaranteed on another device.</p>
+<h3>8.2 Fresh operator machine versus a second end user</h3>
+<p><strong>Fresh operator machine:</strong> build from the lockfile; place a Sepolia RPC URL in a private local root <code>.env</code> based on <code>.env.example</code>; verify deployed manifest/bytecode with <code>npm.cmd run verify:sepolia</code>; acquire a stable public HTTPS origin; run <code>npm.cmd run setup:sepolia-connector -- https://YOUR-HTTPS-ORIGIN</code> once. This makes a <em>new</em> agent signer and local SQLite/OAuth state without broadcasting. Fund that new agent with small Sepolia test ETH for gas and have each owner grant that agent. Start disabled; only after genuine card verification can the guarded live route be enabled. Never copy/publish private keys, SQLite, signing JWK or tokens. A deployer private key is not necessary to reuse this contract.</p>
+<p><strong>Second end user:</strong> does not run the backend if the operator hosts it. They open public dashboard, connect a MetaMask EOA on Sepolia, sign the SIWE login message, deposit their own test ETH, grant the displayed agent with total allowance/cap/expiry (optional allowlist), then OAuth-connect their own ChatGPT plugin to the same /mcp endpoint. Their old ordinary wallet ETH remains outside the vault. Without deposit/grant, they can read a zero balance but cannot pay. Another person's grant cannot spend their vault credit.</p>
+<h3>8.3 Five-minute presentation script</h3>
+<ol><li><strong>0:00–0:45:</strong> “Normal DApps require returning to a website and signing each payment. We wanted a natural-language chat payment without handing MetaMask's key to an AI.”</li>
+<li><strong>0:45–1:45:</strong> Draw owner/agent/vault. “The owner deposits Sepolia ETH and signs bounded permission. The separate agent pays gas; Solidity enforces total, per-payment, expiry and recipient policy.”</li>
+<li><strong>1:45–2:45:</strong> “SIWE proves wallet control to dashboard; OAuth connects the chat client; MCP exposes read, prepare, card and status tools. These do not replace the on-chain grant.”</li>
+<li><strong>2:45–3:45:</strong> “A fresh in-chat card displays exact payment details. The one-use callback lets the agent sign; the contract checks permission and replay ID, then sends ETH to recipient.”</li>
+<li><strong>3:45–5:00:</strong> Show actual Sepolia receipt/event and distinguish verified payment from verify-only screenshot. Mention testnet, host trust, no audit/permanent hosting/GitHub CI claim.</li></ol>
+<h3>8.4 Ten-minute live demo, with recorded-evidence fallback</h3>
+<ol><li><strong>0–2 min:</strong> Check /health, Sepolia chain ID and vault address; dashboard shows wallet, vault and grant. Explain setup checklist is owner-specific and authenticated MCP activity is historical evidence, not a live-token monitor.</li>
+<li><strong>2–4 min:</strong> In ChatGPT select installed AIChainPay plugin. Prompt: “Use AIChainPay only: call get_supported_network, get_wallet_address, get_contract_balance and get_agent_permission. Do not prepare or execute.” Expect chain 11155111, the selected owner, their vault credit and current limits.</li>
+<li><strong>4–6 min:</strong> Prompt: “Use AIChainPay get_request_status for request 7c04c304-d6fa-469f-baf7-4ebd8dcaaba5. Do not prepare or execute another payment.” This request is scoped to the original owner's OAuth client; a second user's plugin cannot read it. For the original owner expect confirmed and the known receipt hash.</li>
+<li><strong>6–9 min (optional new transfer):</strong> Only if evaluator authorizes a test payment and pre-demo grant/balance/gas checks pass, use a fresh client request ID, ≤0.0001 ETH, and a recipient you control. Ask ChatGPT to call prepare_payment then show_payment_confirmation with returned UUID/digest, and stop for your click. Read exact live amount/address/network/source before Confirm. The click authorizes that one vault transfer, not unlimited wallet access. Poll get_request_status until confirmed; do not click again if UI spins.</li>
+<li><strong>9–10 min:</strong> Explain revoke and show past revoke/regrant receipts; do not send another revoke transaction casually during a short demo. If tunnel/client is unavailable, show the recorded first Sepolia receipt, confirm-only screenshot (labelled no transfer), and test output rather than claim a fresh live demo.</li></ol>
+
+<h2>9. Evidence, tests and requirements</h2>
+<p><strong>Deployment:</strong> vault <code>0x915fCDd60d648dC9e9F558e84f805C28269E0aAC</code>, chain 11155111, deployment block 11947272, transaction <code>0xcd059159f582a2783da6f7652d4fec4c390e1696db1b596b2b291ee78005d46d</code>. Public manifest: <code>packages/shared/src/deployment.11155111.json</code>. Runtime code hash/ABI/creation receipt matched in the read-only verifier; Etherscan source publication is not claimed.</p>
+<p><strong>Observed payment:</strong> original owner <code>0x0432821e68A84b2F2e8dCD6e7973d14Db1A939df</code>; agent <code>0x3d111235700B9C3BEdb097467a3bf98bB7FAfA3F</code>; recipient <code>0x94421cF16aAefb1b29B2e9019f7aEF05B83d659f</code>; 0.0001 ETH. Transaction <code>0x2bfe8bfc442c084cc012fed2b345044819bad1a11dfef682fea7a7e0cbff01cf</code> mined in block 11952073 with matching event, owner debit/allowance decrease, exact recipient balance rise and authenticated confirmed MCP status. The verify-only screenshot <code>docs/screenshots/chatgpt-card-verify-approved.png</code> did not itself transfer ETH; there is no separate live-card screenshot.</p>
+<p><strong>Later controls:</strong> owner revoke <code>0x1e8d94f28b434eb393d8e16e830bdd52cb28b7ccc6ceeddd9fcbf7d72</code> (block 11955494) and regrant <code>0x5759f2a59d21ad4e1842cb3c07eff8a1e205498d7ebd08bc8c908612e93e4526</code> (block 11955598). A read-only simulation during revoked state returned <code>PermissionInactive</code>; there was no reverted broadcast. At last check, epoch 3 grant allowed 0.001 ETH aggregate, 0.0001 ETH per payment, any valid recipient, expiry 21 October 2026 13:29:05 UTC. Read again before use. A separate 0.000232 ETH agent transaction <code>0xce0880e7d03f79a69e190db0b25bcd64fe367b780f3f572bb110006cba20ac62</code> succeeded on-chain, but its SQLite row remained submitted and independent client-click screenshot is absent; do not present it as a second fully documented chat flow.</p>
+<table><tr><th>Assignment/build goal</th><th>Source/test/evidence</th><th>Status</th></tr>
+<tr><td>Solidity vault, owner/agent, deposit/withdraw, caps/allowlist/expiry/replay, multi-user isolation</td><td><code>contracts/AIChainPay.sol</code>; 9 contract tests in <code>test/contracts/AIChainPay.ts</code></td><td>Implemented/local tested; deployed Sepolia</td></tr>
+<tr><td>Sepolia deployment, ABI/address/config checks</td><td><code>scripts/deploy.ts</code>, <code>scripts/verify-sepolia.ts</code>, manifest and deployment receipt</td><td>Read-only verifier passed; explorer source verification not claimed</td></tr>
+<tr><td>MetaMask dashboard setup, direct owner controls</td><td><code>frontend/src/App.tsx</code>, deposit/grant/revoke/regrant receipts</td><td>Original owner observed; a second real wallet not manually demonstrated</td></tr>
+<tr><td>SIWE, OAuth, MCP reads and user isolation</td><td><code>connector/src/auth/*</code>, <code>connector/src/mcp/server.ts</code>, 7 backend tests</td><td>Local tests pass; original owner's ChatGPT reads observed</td></tr>
+<tr><td>Immutable preview and exact in-chat confirmation</td><td><code>prepare.ts</code>, <code>chat-approval.ts</code>, <code>payment-card.ts</code>, 5 approval tests; real verify-only screenshot and live audit</td><td>Implemented; real card approval observed with host-trust caveat</td></tr>
+<tr><td>Agent signing, nonce/crash recovery, receipt reconciliation</td><td><code>execute.ts</code>; local execution tests; first live payment receipt</td><td>Local negative/recovery tests pass; one full Sepolia chat payment verified</td></tr>
+<tr><td>Rejection, over-cap, revoke</td><td>Verify-mode rejection audit, over-cap prepare refusal, contract/local tests, revoke/regrant receipts</td><td>Different evidence levels; no live over-cap/rejection transaction broadcast</td></tr>
+<tr><td>Documentation, screenshots, clean install, GitHub submission</td><td>README, this guide, real unconnected Sepolia dashboard and verify-only card screenshots; local clean-install and safety checks</td><td>Docs/screenshots exist; no connected-wallet/live-card screenshot, GitHub remote or hosted CI verified</td></tr></table>
+<p><strong>Recorded local results:</strong> <code>npm.cmd test</code> passed 9 Solidity and 12 connector tests; full build passed with a non-fatal large frontend chunk warning. <code>test:payment-card</code> passed in a synthetic browser host; local-card execution checked actual local-chain transfer, rejection, cap, revocation and replay; local execution tests checked concurrent nonces and recovery. These are not substitutes for ChatGPT/Sepolia evidence. A fresh source-only copy installed, built and passed all 21 tests. Tests should be rerun after source changes; no test result should be invented.</p>
+
+<h2>10. Fifteen viva questions and answers</h2>
+<ol><li><strong>Why a vault instead of paying directly from MetaMask?</strong> An AI backend cannot sign as the owner's wallet without taking its private key. The owner deposits only test funds and delegates bounded contract authority.</li>
+<li><strong>Why does the deployer need a private key?</strong> Deployment is a transaction that must be signed and funded. The deployed contract has no deployer-only spending role.</li>
+<li><strong>Why does the agent need a private key?</strong> It signs <code>executeAgentPayment</code> and pays gas. Its key cannot call <code>withdraw</code> for someone else's credit.</li>
+<li><strong>Why is the owner key only in MetaMask?</strong> Owner deposit, grant, revoke and withdrawal require that person's consent; the backend does not import their key.</li>
+<li><strong>Can my evaluator use another wallet?</strong> Yes, a supported EOA can create its own credit/grant on the same contract. It must do its own SIWE login, deposit and grant. A contract-account wallet is not supported by current login.</li>
+<li><strong>What does SIWE do?</strong> A short-lived signed message authenticates control of a wallet to the dashboard; it is not an ETH transaction or agent grant.</li>
+<li><strong>How is OAuth different?</strong> OAuth gives the chat client scoped API access for that wallet. The Solidity grant independently governs actual vault spending.</li>
+<li><strong>Why MCP?</strong> It gives ChatGPT named read, prepare, card and status tools over a standardized remote connection.</li>
+<li><strong>Why ngrok?</strong> The local connector needs public HTTPS for cloud ChatGPT and OAuth. Ngrok forwards to this laptop; stable hosting can replace it. It does not hold vault ETH.</li>
+<li><strong>What happens if the backend stops?</strong> Chat reads/payments stop, but contract credit and past transactions remain on Sepolia. Owner can later restart or use another compatible interface.</li>
+<li><strong>What prevents over-limit payments?</strong> Contract checks credit, remaining allowance, per-payment cap, expiry, epoch and optional recipient list on every delegated transaction.</li>
+<li><strong>What prevents duplicates?</strong> Prepared idempotency key, one-use card token, SQLite state/nonce journal and on-chain used request ID. Identical signed bytes can be rebroadcast after uncertainty without a new payment.</li>
+<li><strong>How does revocation work?</strong> Owner signs <code>revokeAgent</code>; after mining, grant is inactive and epoch advances. A later grant creates a new epoch; completed payments cannot be reversed.</li>
+<li><strong>Does the contract know a human clicked?</strong> No. The server trusts ChatGPT's UI isolation and one-use callback; Solidity knows only agent signature and on-chain limits.</li>
+<li><strong>What proves payment success?</strong> Mined receipt with expected sender/vault/calldata, matching <code>PaymentExecuted</code> event, recipient ETH increase and reconciled confirmed status—not a prepared preview or AI statement.</li></ol>
+
+<h2>11. Glossary and unsupported claims</h2>
+<table><tr><th>Term</th><th>Meaning</th><th>Term</th><th>Meaning</th></tr>
+<tr><td>EOA</td><td>Private-key-controlled wallet</td><td>Vault</td><td>Contract holding credited ETH</td></tr>
+<tr><td>Sepolia</td><td>Ethereum test network</td><td>Gas</td><td>Transaction computation fee</td></tr>
+<tr><td>Wei</td><td>10⁻¹⁸ ETH</td><td>RPC</td><td>Endpoint for chain reads/broadcast</td></tr>
+<tr><td>ABI</td><td>Contract call/event interface</td><td>Event</td><td>Public contract log in receipt</td></tr>
+<tr><td>Grant</td><td>Owner's bounded agent authority</td><td>Epoch</td><td>Grant version invalidating stale requests</td></tr>
+<tr><td>SIWE</td><td>Wallet-signed website login message</td><td>OAuth/PKCE</td><td>Scoped chat-client authorization flow</td></tr>
+<tr><td>MCP</td><td>Protocol exposing chat tools/resources</td><td>Intent digest</td><td>Hash binding payment terms; not a signature</td></tr>
+<tr><td>Nonce</td><td>Agent transaction sequence number</td><td>SQLite</td><td>Local durable connector state</td></tr>
+<tr><td>Receipt</td><td>Mined transaction result</td><td>ngrok</td><td>HTTPS route to local connector</td></tr></table>
+<div class="card warning"><strong>Do not claim:</strong> mainnet or production readiness; audit; PayBox-equivalent MPC/custody; routine transfer from the owner's ordinary wallet; cryptographic proof of a human click; automatic payment from a remembered tool permission; Claude support; permanent hosting; Etherscan source publication; a real live-card screenshot when only the verify-only screenshot exists; all browser flows tested with a second owner; the 0.000232 ETH request fully reconciled; or GitHub publication/CI without an actual remote and run.</div>
+<p class="small">Source of truth: <code>contracts/AIChainPay.sol</code>, <code>packages/shared/src/AIChainPay.abi.json</code>, <code>frontend/src/App.tsx</code>, <code>connector/src/**</code>, deployment manifest, test suite, public Sepolia receipts and <code>IMPLEMENTATION_STATUS.md</code>. Historical status entries are snapshots; read the latest audit first. No private configuration is reproduced in this guide.</p>
+</body></html>

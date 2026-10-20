@@ -7,8 +7,10 @@ import type { Config } from "../config.js";
 import type { Principal } from "../auth/oauth.js";
 import type { ChainService } from "../blockchain/index.js";
 import type { PaymentIndexer } from "../blockchain/indexer.js";
-import { cancelPayment, preparePayment, preview, requestForPrincipal } from "../payments/prepare.js";
+import { assertExecutionDetails, cancelPayment, preparePayment, preview, requestForPrincipal } from "../payments/prepare.js";
 import type { ExecutionService } from "../payments/execute.js";
+import { issueChatApproval, decideChatApproval } from "../payments/chat-approval.js";
+import { PAYMENT_CARD_HTML, PAYMENT_CARD_URI } from "./payment-card.js";
 
 const resultSchema = z.object({ result: z.unknown() });
 function ok(result: unknown) { return { content: [{ type: "text" as const, text: JSON.stringify(result) }], structuredContent: { result } }; }
@@ -19,11 +21,40 @@ function requireScope(principal: Principal, scope: string) { if (!principal.scop
 
 export function createMcpServer(db: Database.Database, config: Config, chain: ChainService, indexer: PaymentIndexer, principal: Principal, execution: ExecutionService): McpServer {
   const server = new McpServer({ name: "AIChainPay", version: "0.1.0" }, {
-    instructions: `All payments spend deposited AIChainPay vault ETH on Sepolia, not ordinary MetaMask wallet ETH. Execute only after reviewing the stored intent. Execution is ${config.confirmationAdapter === "disabled" ? "disabled until a real in-chat approval adapter has been verified" : "gated by the tested ChatGPT native write approval"}.`,
+    instructions: "Payments spend AIChainPay vault ETH, not ordinary MetaMask ETH. Prepare first, then call show_payment_confirmation with the returned request_id and intent_digest. The human reviews and clicks the in-chat card; never invent approval or ask for its private capability. The card states whether it is verification-only or a live Sepolia test transfer. If the card does not render, stop. Use get_request_status for actual results; never claim a transfer from preparation or HTTP success.",
   });
   // The SDK's generic Zod v3/v4 overload becomes prohibitively expensive under
   // strict TS for this many tools. Runtime schemas remain registered and checked.
   const registerTool = server.registerTool.bind(server) as unknown as (name: string, config: Record<string, unknown>, callback: (args: any) => Promise<unknown>) => void;
+
+  server.registerResource("payment-confirmation", PAYMENT_CARD_URI, { mimeType: "text/html;profile=mcp-app" }, async () => ({
+    contents: [{ uri: PAYMENT_CARD_URI, mimeType: "text/html;profile=mcp-app", text: PAYMENT_CARD_HTML,
+      _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [] } } } }],
+  }));
+  registerTool("show_payment_confirmation", {
+    description: "Show an interactive in-chat Confirm/Reject card for an existing immutable payment. Does not send ETH. Use after prepare_payment; unsupported hosts must stop. Never request a website approval.",
+    inputSchema: z.object({ request_id: z.string().uuid(), intent_digest: z.string().regex(/^0x[0-9a-fA-F]{64}$/) }).strict(),
+    outputSchema: resultSchema, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    _meta: { ui: { resourceUri: PAYMENT_CARD_URI }, "openai/outputTemplate": PAYMENT_CARD_URI },
+  }, async ({ request_id, intent_digest }) => {
+    try {
+      const { token, ...data } = issueChatApproval(db, config, principal, request_id, intent_digest);
+      return { ...ok(data), _meta: { "aichainpay/approval": { token } } };
+    } catch (error) { return fail(error); }
+  });
+  registerTool("confirm_payment_card", {
+    description: "App-only action invoked by a trusted human click in the payment card. In live mode may transfer the exact prepared Sepolia vault payment; verification mode records only. Never call from the model.",
+    inputSchema: z.object({ request_id: z.string().uuid(), intent_digest: z.string().regex(/^0x[0-9a-fA-F]{64}$/), token: z.string().regex(/^[a-f0-9]{64}$/), decision: z.enum(["approve", "reject"]) }).strict(),
+    outputSchema: resultSchema, annotations: write,
+    _meta: { ui: { visibility: ["app"] }, "openai/widgetAccessible": true },
+  }, async (input) => {
+    try {
+      const result = decideChatApproval(db, config, principal, input);
+      if (result.decision === "reject") return ok({ ...result, state: "rejected", transaction_hash: null });
+      if (result.mode === "verify") return ok({ ...result, confirmation_check: "recorded", execution_enabled: false, transaction_hash: null, message: "Confirmation recorded for verification only. No ETH sent. This cannot authorize a later live transfer." });
+      return ok(await execution.execute(principal, input.request_id, input.intent_digest));
+    } catch (error) { return fail(error); }
+  });
 
   registerTool("get_wallet_address", { description: "Get the EOA verified by wallet sign-in for this OAuth connection.", inputSchema: z.object({}).strict(), outputSchema: resultSchema, annotations: readOnly }, async () => ok({ address: principal.address, chain_id: config.chainId }));
   registerTool("get_supported_network", { description: "Get the configured test network. Production supports Sepolia only.", inputSchema: z.object({}).strict(), outputSchema: resultSchema, annotations: readOnly }, async () => ok({ chain_id: config.chainId, name: config.chainId === 11155111 ? "Sepolia" : "Explicit local test chain", explorer_url: config.chainId === 11155111 ? EXPLORER_BASE_URL : null }));
@@ -53,15 +84,28 @@ export function createMcpServer(db: Database.Database, config: Config, chain: Ch
   }, async (args) => { try { return ok(await preparePayment(db, config, chain, principal, args)); } catch (error) { return fail(error); } });
 
   registerTool("execute_payment", {
-    description: "Execute a stored immutable vault payment only after supported in-chat confirmation. Currently disabled: no transaction is broadcast.",
-    inputSchema: z.object({ request_id: z.string().uuid(), intent_digest: z.string().regex(/^0x[0-9a-fA-F]{64}$/) }).strict(), outputSchema: resultSchema, annotations: write,
-  }, async ({ request_id, intent_digest }) => {
+    description: "HIGH IMPACT: Send Sepolia test ETH from the owner's deposited AIChainPay vault directly to the recipient. The chat client's human write confirmation must show and require approval of ALL exact fields below for EACH payment. Never remember/auto-approve this tool. If details cannot be shown, decline. No website or MetaMask approval is used for this routine payment.",
+    inputSchema: z.object({
+      request_id: z.string().uuid().describe("Prepared request UUID"),
+      intent_digest: z.string().regex(/^0x[0-9a-fA-F]{64}$/).describe("Immutable intent digest"),
+      source: z.string().describe("Exact source from prepare_payment, including vault distinction"),
+      owner: z.string().describe("Exact checksummed owner wallet from prepare_payment"),
+      chain_id: z.number().int().describe("Exact chain ID from prepare_payment; Sepolia is 11155111"),
+      contract: z.string().describe("Exact vault contract address from prepare_payment"),
+      recipient: z.string().describe("Full exact recipient address from prepare_payment"),
+      amount_eth: z.string().describe("Exact canonical ETH amount from prepare_payment"),
+      memo: z.string().describe("Exact public memo from prepare_payment, including empty string"),
+      request_deadline: z.string().describe("Exact ISO deadline from prepare_payment"),
+    }).strict(), outputSchema: resultSchema, annotations: write,
+  }, async ({ request_id, intent_digest, ...details }) => {
     try {
       requireScope(principal, "payments:execute");
       const row = requestForPrincipal(db, principal, request_id);
       if (!row) throw new Error("Request not found for this authenticated wallet and client");
       if (row.intent_digest !== intent_digest) throw new Error("Intent digest mismatch");
-      if (config.confirmationAdapter === "disabled") return fail(new Error("Execution disabled: no verified in-chat human-confirmation adapter. No transaction was signed or broadcast."));
+      assertExecutionDetails(row, details);
+      if (config.confirmationAdapter === "chatgpt_app") return fail(new Error("Use show_payment_confirmation and the in-chat card. Model-initiated execution cannot substitute for a card decision."));
+      if (config.confirmationAdapter === "disabled") return fail(new Error("Execution disabled by AIChainPay server configuration (CONFIRMATION_ADAPTER=disabled). This response does not establish whether the chat client displayed a human approval prompt. No transaction was signed or broadcast."));
       return ok(await execution.execute(principal, request_id, intent_digest));
     } catch (error) { return fail(error); }
   });

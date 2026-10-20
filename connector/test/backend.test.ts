@@ -1,11 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, sep } from "node:path";
 import { Wallet, parseEther } from "ethers";
 import { migrate } from "../src/db/index.js";
-import { createChallenge, verifyLogin } from "../src/auth/siwe.js";
-import { verifyBearer, type Principal } from "../src/auth/oauth.js";
-import { cancelPayment, preparePayment, requestForPrincipal } from "../src/payments/prepare.js";
+import { createChallenge, isEoaAccountCode, verifyLogin } from "../src/auth/siwe.js";
+import { createOAuthProvider, verifyBearer, type Principal } from "../src/auth/oauth.js";
+import { assertExecutionDetails, cancelPayment, preparePayment, requestForPrincipal } from "../src/payments/prepare.js";
 import { normalizeAddress, parseAmountEth, validateMemo } from "@aichainpay/shared";
 import type { Config } from "../src/config.js";
 import type { ChainService } from "../src/blockchain/index.js";
@@ -59,6 +62,26 @@ test("SIWE challenge binds fields, consumes nonce once and rejects expiry", asyn
   db.close();
 });
 
+test("SIWE accepts a signed EIP-7702 EOA but rejects contract account code", async () => {
+  const { db, wallet, config } = setup();
+  const delegation = `0xef0100${Wallet.createRandom().address.slice(2)}`;
+  assert.equal(isEoaAccountCode("0x"), true);
+  assert.equal(isEoaAccountCode(delegation), true);
+  assert.equal(isEoaAccountCode(`${delegation}00`), false);
+  assert.equal(isEoaAccountCode("0x6001600055"), false);
+
+  const challenge = createChallenge(db, config, wallet.address);
+  const signature = await wallet.signMessage(challenge.message);
+  const delegatedProvider = { getCode: async () => delegation } as unknown as JsonRpcProvider;
+  assert.equal((await verifyLogin(db, config, delegatedProvider, challenge.message, signature)).address, wallet.address);
+
+  const another = createChallenge(db, config, wallet.address);
+  const anotherSignature = await wallet.signMessage(another.message);
+  const contractProvider = { getCode: async () => "0x6001600055" } as unknown as JsonRpcProvider;
+  await assert.rejects(verifyLogin(db, config, contractProvider, another.message, anotherSignature), /Only EOA wallets/);
+  db.close();
+});
+
 test("OAuth bearer verification rejects wrong audience, scope and expiry", async () => {
   const { db, wallet, config } = setup();
   const now = Math.floor(Date.now() / 1000);
@@ -72,6 +95,20 @@ test("OAuth bearer verification rejects wrong audience, scope and expiry", async
   db.close();
 });
 
+test("HTTPS OAuth issuer trusts forwarded protocol for reverse-proxy discovery", () => {
+  const directory = mkdtempSync(join(tmpdir(), "aichainpay-oauth-proxy-"));
+  const { db, config } = setup();
+  try {
+    const origin = "https://pay.example.test";
+    const provider = createOAuthProvider(db, { ...config, publicBaseUrl: origin, issuer: origin, databasePath: join(directory, "test.sqlite") });
+    assert.equal(provider.proxy, true);
+  } finally {
+    db.close();
+    if (!resolve(directory).startsWith(`${resolve(tmpdir())}${sep}`)) throw new Error("Temporary test directory escaped OS temp");
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("preparation is immutable, idempotent and never broadcasts", async () => {
   const { db, config, chain, principal, recipient } = setup();
   const input = { recipient: recipient.address, amount_eth: "0.1", memo: "test", client_request_id: "payment-001" };
@@ -80,6 +117,14 @@ test("preparation is immutable, idempotent and never broadcasts", async () => {
   assert.deepEqual(first, second);
   assert.equal(first.state, "prepared");
   assert.equal(first.amount_wei, parseEther("0.1").toString());
+  const stored = requestForPrincipal(db, principal, first.request_id)!;
+  assert.doesNotThrow(() => assertExecutionDetails(stored, first));
+  for (const altered of [
+    { recipient: recipient.address.toLowerCase() }, { amount_eth: "0.2" },
+    { source: "ordinary wallet" }, { owner: recipient.address },
+    { contract: recipient.address }, { memo: "changed" }, { chain_id: 11155111 },
+    { request_deadline: "2099-01-01T00:00:00.000Z" },
+  ]) assert.throws(() => assertExecutionDetails(stored, { ...first, ...altered }), /does not match/);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM payment_requests").get().count, 1);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM transaction_attempts").get().count, 0);
   await assert.rejects(preparePayment(db, config, chain, principal, { ...input, amount_eth: "0.2" }), /conflicts/);

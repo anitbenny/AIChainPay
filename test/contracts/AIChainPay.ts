@@ -61,6 +61,11 @@ describe("AIChainPay vault", function () {
     expect(await vault.getBalance(other.address)).to.equal(one);
     await vault.connect(agent).executeAgentPayment(owner.address, recipient.address, one / 4n, "", id(), 1n, now + 600n);
     await expect(vault.connect(agent).executeAgentPayment(owner.address, recipient.address, 1n, "", id(), 1n, now + 600n)).to.be.revertedWithCustomError(vault, "AllowanceExceeded");
+    await vault.connect(other).grantAgent(agent.address, one / 2n, one / 4n, now + 3600n, []);
+    await vault.connect(agent).executeAgentPayment(other.address, recipient.address, one / 4n, "second owner", id(), 1n, now + 600n);
+    expect(await vault.getBalance(other.address)).to.equal(one * 3n / 4n);
+    expect(await vault.getBalance(owner.address)).to.equal(one / 2n);
+    expect(await ethers.provider.getBalance(recipient.address) - before).to.equal(one * 3n / 4n);
   });
 
   it("replaces grants, increments epochs and restricts recipients", async function () {

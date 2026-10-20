@@ -15,6 +15,7 @@ import { createChallenge, getBrowserSession, hashSession, verifyLogin } from "./
 import { createOAuthProvider, verifyBearer } from "./auth/oauth.js";
 import { createMcpServer } from "./mcp/server.js";
 import { ExecutionService, chatGptNativeConfirmation } from "./payments/execute.js";
+import { chatAppConfirmation } from "./payments/chat-approval.js";
 import { preview, type PaymentRequestRow } from "./payments/prepare.js";
 
 async function main() {
@@ -22,11 +23,29 @@ async function main() {
   const db = openDatabase(config.databasePath);
   const chain = new ChainService(config);
   const indexer = new PaymentIndexer(db, config, chain);
-  const execution = new ExecutionService(db, config, chain, chatGptNativeConfirmation(config));
+  const execution = new ExecutionService(db, config, chain, config.confirmationAdapter === "chatgpt_app" ? chatAppConfirmation(db, config) : chatGptNativeConfirmation(config));
   const oauth = createOAuthProvider(db, config);
   const isSecure = config.publicBaseUrl.startsWith("https:");
   const app = createMcpExpressApp({ host: new URL(config.publicBaseUrl).hostname });
   app.disable("x-powered-by");
+  // Keep OAuth diagnostics useful without recording codes, state, cookies, or interaction IDs.
+  app.use((req, res, next) => {
+    const redactPath = (path: string) => path.replace(/^\/interaction\/[^/]+/, "/interaction/:uid").replace(/^\/auth\/[^/]+/, "/auth/:id");
+    const path = redactPath(req.path);
+    if (!/^\/(?:auth|token|interaction|mcp|api\/auth|\.well-known)(?:\/|$)/.test(path)) { next(); return; }
+    res.on("finish", () => {
+      const location = res.getHeader("Location");
+      let redirect: string | undefined;
+      if (typeof location === "string") {
+        try {
+          const target = new URL(location, config.publicBaseUrl);
+          redirect = `${target.origin}${redactPath(target.pathname)}`;
+        } catch { /* Invalid redirect is still visible through the status. */ }
+      }
+      console.log(JSON.stringify({ at: new Date().toISOString(), method: req.method, path, status: res.statusCode, redirect }));
+    });
+    next();
+  });
   app.use(["/api", "/mcp"], express.json({ limit: "32kb" }));
   app.use("/interaction", express.urlencoded({ extended: false, limit: "16kb" }));
 
@@ -79,9 +98,10 @@ async function main() {
         config.agentAddress ? chain.permission(current.address, config.agentAddress) : Promise.resolve(null),
       ]);
       const activity = db.prepare("SELECT action,detail,at FROM audit_entries WHERE owner=? ORDER BY at DESC LIMIT 10").all(current.address);
+      const mcpRequestObserved = Boolean(db.prepare("SELECT 1 FROM audit_entries WHERE owner=? AND action='mcp_request' LIMIT 1").get(current.address));
       res.json({ address: current.address, walletEth: formatEther(wallet), vaultEth: formatEther(vault), agentGasEth: config.agentAddress ? formatEther(agentGas) : null,
         permission: grant ? { active: grant.active, remainingAllowanceEth: formatEther(grant.remainingAllowance), maxPerPaymentEth: formatEther(grant.maxPerPayment), expiresAt: grant.expiresAt, epoch: grant.epoch.toString(), restrictedRecipients: grant.restrictedRecipients } : null,
-        verifiedConnectorActivity: activity });
+        verifiedConnectorActivity: activity, mcpRequestObserved });
     } catch { res.status(503).json({ error: "Chain data unavailable or configured vault invalid" }); }
   });
   app.get("/api/payments", async (req, res) => {
@@ -96,6 +116,8 @@ async function main() {
   app.get("/api/requests", (req, res) => {
     const current = session(req);
     if (!current) { res.status(401).json({ error: "Wallet login required" }); return; }
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare("UPDATE payment_requests SET state='expired',updated_at=? WHERE owner=? AND state='prepared' AND tx_hash IS NULL AND deadline<=?").run(now, current.address, now);
     const rows = db.prepare("SELECT * FROM payment_requests WHERE owner=? ORDER BY created_at DESC LIMIT 20").all(current.address) as PaymentRequestRow[];
     res.json({ items: rows.map(row => preview(row)), scope: "Prepared requests for this verified wallet; on-chain confirmation must be checked separately" });
   });
@@ -110,6 +132,17 @@ async function main() {
       return;
     }
     db.prepare("INSERT INTO audit_entries(owner,action,detail,at) VALUES(?,?,?,?)").run(principal.address, "mcp_request", principal.clientId.slice(0, 200), Math.floor(Date.now() / 1000));
+    if (req.body?.method === "tools/call") {
+      const requestedName = req.body?.params?.name;
+      const toolName = typeof requestedName === "string" && /^[a-z][a-z0-9_]{0,79}$/.test(requestedName) ? requestedName : "unknown";
+      res.on("finish", () => {
+        try {
+          db.prepare("INSERT INTO audit_entries(owner,action,detail,at) VALUES(?,?,?,?)").run(
+            principal.address, "mcp_tool_call", `${toolName} status=${res.statusCode} client=${principal.clientId.slice(0, 120)}`, Math.floor(Date.now() / 1000),
+          );
+        } catch { console.error("MCP tool audit write failed"); }
+      });
+    }
     const mcp = createMcpServer(db, config, chain, indexer, principal, execution);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     try { await mcp.connect(transport); await transport.handleRequest(req, res, req.body); }
@@ -162,7 +195,8 @@ async function main() {
   app.use(oauth.callback());
   await chain.check();
   if (config.confirmationAdapter !== "disabled") await execution.recover();
-  app.listen(config.port, () => console.log(`AIChainPay connector listening on port ${config.port}; execution ${config.confirmationAdapter === "disabled" ? "disabled" : "enabled"}`));
+  const listenHost = process.env.LISTEN_HOST || "0.0.0.0";
+  app.listen(config.port, listenHost, () => console.log(`AIChainPay connector listening on ${listenHost}:${config.port}; execution ${config.confirmationAdapter === "disabled" ? "disabled" : "enabled"}`));
 }
 
 main().catch(error => { console.error(error instanceof Error ? error.message : "Startup failed"); process.exitCode = 1; });

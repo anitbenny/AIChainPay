@@ -9,6 +9,12 @@ export type BrowserSession = { address: string; csrf: string; expires_at: number
 
 export function hashSession(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 
+// EIP-7702 EOAs have a 23-byte delegation indicator, not empty account code.
+// The SIWE signature above must still recover the account's own EOA key.
+export function isEoaAccountCode(code: string): boolean {
+  return code === "0x" || /^0xef0100[0-9a-f]{40}$/i.test(code);
+}
+
 export function createChallenge(db: Database.Database, config: Config, addressInput: string) {
   const address = normalizeAddress(addressInput);
   const nonce = randomBytes(16).toString("hex");
@@ -17,7 +23,9 @@ export function createChallenge(db: Database.Database, config: Config, addressIn
   const message = new SiweMessage({
     domain: new URL(config.publicBaseUrl).host,
     address,
-    statement: "Sign in to manage your AIChainPay Sepolia vault. This does not grant spending permission.",
+    statement: config.chainId === 31337
+      ? "Sign in to the AIChainPay local test-chain connector. This does not grant spending permission."
+      : "Sign in to manage your AIChainPay Sepolia vault. This does not grant spending permission.",
     uri: config.publicBaseUrl,
     version: "1",
     chainId: config.chainId,
@@ -38,7 +46,7 @@ export async function verifyLogin(db: Database.Database, config: Config, provide
   if (!parsed.issuedAt || !parsed.expirationTime || new Date(parsed.issuedAt).getTime() > Date.now() + 30_000 || new Date(parsed.expirationTime).getTime() <= Date.now()) throw new Error("SIWE time bounds invalid");
   const result = await parsed.verify({ signature, domain: parsed.domain, nonce: parsed.nonce, time: new Date().toISOString() });
   if (!result.success) throw new Error("Invalid SIWE signature");
-  if (await provider.getCode(row.address) !== "0x") throw new Error("Only EOA wallets are supported in v1");
+  if (!isEoaAccountCode(await provider.getCode(row.address))) throw new Error("Only EOA wallets are supported in v1");
   const cookie = randomBytes(32).toString("base64url");
   const csrf = randomBytes(24).toString("base64url");
   const expires = now + 12 * 3600;

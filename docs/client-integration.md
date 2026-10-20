@@ -1,32 +1,68 @@
-# Client integration: actual evidence boundary
+# ChatGPT integration — current card workflow
+Current endpoint: **https://upscale-nanometer-duvet.ngrok-free.dev/mcp**, authentication **OAuth**, Sepolia **11155111**. The same public origin is the OAuth issuer and dashboard. All MCP calls require wallet-linked bearer authentication. There is no OpenAI API key requirement.
 
-ChatGPT is the first target client. The connector offers authenticated Streamable HTTP MCP at `https://<your-host>/mcp`; it is **not** an LLM API and needs no OpenAI API key. Initial OAuth/wallet login may open a browser. Routine payment confirmation must occur in the chat client, without returning to the AIChainPay website or MetaMask for each payment.
+Availability on 2026-10-20: public health/discovery/challenge checks passed after the user restored ngrok. OAuth access was subsequently renewed. The actual ChatGPT card's verification-only approval/rejection and later live approval reached authenticated callbacks. The [live Sepolia payment](https://sepolia.etherscan.io/tx/0x2bfe8bfc442c084cc012fed2b345044819bad1a11dfef682fea7a7e0cbff01cf) succeeded in block 11952073; authenticated MCP status reported `confirmed` with 17 confirmations. The card initially appeared to keep loading, so **do not click again**; use `get_request_status` for request `7c04c304-d6fa-469f-baf7-4ebd8dcaaba5`.
 
-Official references consulted: [OpenAI custom MCP server](https://developers.openai.com/plugins/build/mcp-server), [authorization](https://developers.openai.com/plugins/build/auth), [connecting to ChatGPT](https://developers.openai.com/plugins/deploy/connect-chatgpt), [MCP authorization](https://modelcontextprotocol.io/specification/latest/basic/authorization), and [MCP elicitation](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation). Client features and account access can change; recheck the official pages during live setup.
+## What is already observed
+Real owner SIWE, ChatGPT token exchange, authenticated Sepolia reads and payment preparation succeeded. Repeated native execute calls reached the disabled backend but adequate fresh execution approval was not established. The user-visible error was emitted by the backend configuration, not by ChatGPT's UI.
 
-## Implemented locally
+ChatGPT's current CIMD uses private_key_jwt: only the actual ChatGPT client can provide its signed client assertion. A synthetic callback test cannot claim to redeem as ChatGPT. Access tokens currently expire after one hour; reconnection may be needed. Never share callback code/state queries, tokens or cookies.
 
-The connector publishes OAuth authorization-server and protected-resource metadata, uses authorization code + PKCE with persistent `oidc-provider`, restricts the resource audience to `/mcp`, and binds tokens to a wallet address verified through a one-use SIWE challenge. It accepts ChatGPT's Client ID Metadata Document registration pattern by policy. A local synthetic client completed OAuth, initialized MCP, listed tools and read an actual **local-chain** vault balance. That is protocol evidence only; it is not evidence that a real ChatGPT account connected or approved a write.
+## New adapter and its trust boundary
+The new card uses the documented [MCP Apps UI bridge](https://developers.openai.com/plugins/build/chatgpt-ui) and [resource/tool metadata](https://developers.openai.com/plugins/reference). It renders inside ChatGPT, not at a website approval link. No new dependencies were needed; the existing pinned MCP SDK registers the resource and tools.
 
-`probe_write_confirmation` is a harmless, audited MCP write with no blockchain transaction. `prepare_payment` stores an immutable preview and does not broadcast. `execute_payment` accepts only request ID and digest; it cannot change recipient/amount. The service has a `chatgpt_native` adapter that trusts the client's native per-write approval **only after an operator has observed and recorded an adequate real approval UI**. OAuth alone is not human approval; the server receives no cryptographic click receipt. MCP form-mode elicitation is not used for financial authorization because the protocol prohibits collecting transaction-authorizing credentials/information there. Tool annotations are hints, not enforcement.
+Flow:
+1. prepare_payment creates an immutable, owner/client-bound intent and short deadline.
+2. show_payment_confirmation returns the full intent and UI resource. A random capability is included ONLY in widget-private result metadata, with only its hash stored in SQLite.
+3. The card displays exact details. Confirm/Reject triggers an app-only authenticated callback containing that capability and the exact request/digest.
+4. The backend validates user, client, capability, mode, expiry and unused state. Verification mode records only; live mode uses the existing signer pipeline. Reject never broadcasts.
+5. get_request_status reports actual persisted/chain state. A submitted transaction needs later status polling; there are no unsolicited updates.
 
-The default `CONFIRMATION_ADAPTER=disabled` refuses execution before signing/broadcast. `CHATGPT_APPROVAL_TESTED=1` is an operator-controlled assertion, not a technical proof. The adapter is further constrained to Sepolia, HTTPS and recognized ChatGPT client IDs. **Do not set it until the real client/version/account has been tested**, including whether its approval screen reveals the exact stored owner, vault source, full recipient, ETH amount, public memo, deadline and expected effect. If those details are not visible, the native approval approach is not adequate and remains blocked. A preview shown in a previous chat message alone is not proof that the client's execution approval screen binds to it.
+The host must isolate private metadata from the model and honor app-only tool visibility. Trusted DOM event handling prevents the component itself from silently calling its action on render, but it is not cryptographic attestation and cannot defend against a malicious host/backend. The callback is not merely an approved:true model field: a fresh secret, bound to one immutable intent, is required. The on-chain contract still enforces limits independently.
 
-## Required manual ChatGPT test
+ChatGPT's ordinary tool permission dialogs remain in effect. The card does NOT bypass host safety policy, collect signing credentials, or disguise a transfer as read-only. If the host blocks financial tool actions, do not rename/mislabel them to evade that block.
 
-1. Deploy the vault to Sepolia and run the connector behind a stable public HTTPS endpoint with persistent storage. Keep execution disabled. Record the actual deployment manifest and endpoint privately. The connector's `/health` and discovery metadata should be reachable; a bare `/mcp` request without OAuth must return 401.
-2. Check whether your ChatGPT account/workspace exposes adding a custom remote MCP server/connector. Add the exact HTTPS `/mcp` URL using ChatGPT's current official interface. If the setting is absent, stop live integration at this account-capability blocker; local MCP tests cannot substitute.
-3. Follow OAuth. The browser dashboard asks for a MetaMask SIWE login signature if needed. Verify the account, chain, address and scope consent. The SIWE signature logs in; it does not move ETH. Connect only the intended owner wallet. Do not paste a private key or seed phrase.
-4. In chat, ask “Which wallet and network are linked to AIChainPay?” and “What is my deposited vault balance and active agent limit?” Compare the reported values to the Sepolia contract and dashboard. Record client name/version/date and whether actual on-chain values matched.
-5. Invoke `probe_write_confirmation` in chat. Observe the exact confirmation UI and whether a human must approve it before the server logs the probe. A harmless probe does **not** prove the real payment prompt is adequate. Next prepare a tiny intended payment and inspect the proposed `execute_payment` confirmation **without accepting** until the full immutable intent is visibly and unambiguously bound to the write action. If the UI shows only a UUID/digest or a generic execute label, stop; do not enable execution.
-6. If the approval mechanism is actually adequate and observed, record the client/version/date/screenshot or redacted notes locally in [implementation status](../IMPLEMENTATION_STATUS.md). Only then set `CONFIRMATION_ADAPTER=chatgpt_native` and `CHATGPT_APPROVAL_TESTED=1` in the server's private configuration and restart. A small Sepolia transfer, decline/no-broadcast and revocation test remain necessary for live acceptance. Before approving a real execution, understand that it sends the displayed amount of deposited test ETH to the displayed recipient; the agent pays gas and the transfer is irreversible once mined.
+## One next account action
+**Current result:** verification-only approval (`sepolia-card-check-002`) and rejection (`sepolia-card-reject-001`) are recorded; the rejected request has no transaction. A separate live approval for `sepolia-send-20261020-001` caused a confirmed 0.0001 ETH transfer. A later owner revoke and regrant also succeeded; a read-only call during the revoked interval returned `PermissionInactive`. No additional card or payment is needed for the successful-transfer demonstration. The earlier authenticated over-cap preparation was refused without a transaction. GitHub publication, permanent hosting and a live-card screenshot remain unverified.
 
-Suggested prompts after setup:
+The user-provided [ChatGPT screenshot](./screenshots/chatgpt-card-verify-approved.png) and matching audit establish rendering and a successful verification callback, not cryptographic proof of a human or full host isolation. The screenshot's “CSP off” badge is recorded; CSP enforcement has not been demonstrated.
 
-> Show my AIChainPay vault balance and agent allowance on Sepolia.
+### Connection recovery only
+If the connector is in its verified live mode and the tunnel stops, run this in PowerShell from the repository:
+```powershell
+.\scripts\start-stable-ngrok.ps1 -PublicBaseUrl https://upscale-nanometer-duvet.ngrok-free.dev -AllowLiveConnector
+```
+Enter the authtoken in the hidden local prompt, never chat, and leave the terminal open. Verify public `/health`, OAuth issuer/resource discovery and `/mcp` bearer challenge before proceeding. No deposit, grant or wallet transaction is required. When public connectivity is restored, expired access may require wallet ownership sign-in again; that signature authenticates the wallet and does not spend ETH.
 
-> Prepare a payment of 0.001 Sepolia ETH from my AIChainPay vault to 0x… with memo “demo”, then show me the exact recipient and amount. Do not execute yet.
+### After public connectivity is verified
+Refresh tools/metadata for the existing AIChainPay plugin in ChatGPT's plugin details. Keep **Always ask**. Do not recreate the connection unless its actual URL differs; the ngrok URL did not change.
 
-> Execute the prepared payment only if the exact vault, full recipient, amount and memo match what I intended. Show the current request status and real explorer link.
+Then request:
+> Use AIChainPay prepare_payment for recipient 0x94421cF16aAefb1b29B2e9019f7aEF05B83d659f, amount_eth "0.0001", memo "Sepolia card check", client_request_id "sepolia-card-check-001". Then call show_payment_confirmation with the returned request_id and intent_digest. Do not call execute_payment. Wait for my click on the card.
 
-The client may return `submitted`; ask for `get_request_status` later. No unsolicited completion message is implemented. Claude is a second target and **has not been connected or tested**; no Claude confirmation claim is made.
+The genuine interactive card must show **CONFIRMATION CHECK ONLY**, full payment details, Confirm test and Reject buttons. Confirm once, then verify a chat_card_decision audit entry with mode verify and zero transactions. Repeat with a distinct new client_request_id and Reject to verify rejection. A screenshot or response generated by the assistant is not the card.
+
+No card, missing private metadata, missing buttons, unsupported app-only callback, or automatic action means this gate is still blocked. Never enable live mode merely because a tool returned HTTP 200. Existing local synthetic card tests are not live-client evidence.
+
+## Live setup performed for this session
+Actual card verification and separate agent gas funding have been recorded. The chain, matching agent identity, owner grant, expiry, amount and destination were rechecked before live startup. The direct gas-funding receipt is [0x4e14c2530a67a557f5160b2d12bcc0397433b0d94af6a2ca212378595836700b](https://sepolia.etherscan.io/tx/0x4e14c2530a67a557f5160b2d12bcc0397433b0d94af6a2ca212378595836700b). The separate live payment is verified above.
+
+Set these locally, never in chat:
+```dotenv
+CONFIRMATION_ADAPTER=chatgpt_app
+CHATGPT_APP_APPROVAL_TESTED=1
+```
+The disabled backend was stopped and `npm.cmd run start:sepolia -- --live` was started. The launcher checks verification approval/rejection evidence and reads the ignored local agent key only in this explicit mode. Root deployer credentials are not mounted into the child. The read-only launcher `npm.cmd run start:sepolia` always disables execution.
+
+The live payment used its own new card/intent; verification-mode capabilities did not authorize it. Receipt/event/recipient/allowance evidence was obtained. Do not repeat the payment; finish over-limit and revocation checks. Do not use the legacy chatgpt_native adapter without its own adequate verification.
+
+## Post-demo shutdown
+1. Owner MetaMask: Revoke agent on Sepolia; wait for mining and verify inactive permission. This blocks future spending, not earlier/pending payments.
+2. Optional owner MetaMask: Withdraw remaining vault balance, paying owner gas. Verify the receipt/balance.
+3. Disconnect the ChatGPT plugin and dashboard session. OAuth disconnection alone does not revoke the contract grant.
+4. Stop backend and tunnel. Retain protected database/key until signed transactions are reconciled.
+
+## Other clients and historical notes
+Claude is untested; the current OAuth allowlist targets ChatGPT. Do not claim switching clients solves approval without implementing and testing their supported authentication/UI.
+
+Older tunnel/OAuth/native-probe experiments are superseded by this card workflow. Official [custom MCP connection guidance](https://developers.openai.com/api/docs/guides/custom-mcp-server) documents plugin refresh and remembered approval behavior. New conversations are not a substitute for the explicit payment card.

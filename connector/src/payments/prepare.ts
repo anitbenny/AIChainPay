@@ -39,6 +39,17 @@ export function preview(row: PaymentRequestRow) {
   };
 }
 
+/** Bind every human-readable execution argument to the persisted immutable intent. */
+export function assertExecutionDetails(row: PaymentRequestRow, details: {
+  source: string; owner: string; chain_id: number; contract: string;
+  recipient: string; amount_eth: string; memo: string; request_deadline: string;
+}): void {
+  const expected = preview(row);
+  for (const key of ["source", "owner", "chain_id", "contract", "recipient", "amount_eth", "memo", "request_deadline"] as const) {
+    if (details[key] !== expected[key]) throw new Error(`Execution ${key} does not match the prepared payment`);
+  }
+}
+
 export async function preparePayment(db: Database.Database, config: Config, chain: ChainService, principal: Principal, input: { recipient: string; amount_eth: string; memo?: string; client_request_id: string }) {
   if (!principal.scopes.has("payments:prepare")) throw new Error("Missing payments:prepare scope");
   if (!config.agentAddress) throw new Error("Agent address is not configured");

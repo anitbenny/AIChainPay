@@ -18,3 +18,12 @@ coverage/
 *.signedtx
 data/
 frontend/public/deployment.local.json
+# Local planning, progress, and development-only documentation.
+*_Build_Spec.md
+IMPLEMENTATION_STATUS.md
+docs/*.md
+docs/screenshots/local-chain-dashboard.png
+docs/screenshots/confirmation-card-local-test.png
+packages/shared/src/deployment.31337.json
+# Untracked tunnel diagnostic artifact from this workstation.
+httpsupscale-nanometer-duvet.ngrok-.txt

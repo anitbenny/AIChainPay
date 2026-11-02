@@ -1,8 +1,0 @@
-{
-  "network": "localhost",
-  "chainId": 31337,
-  "address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-  "deploymentBlock": 1,
-  "deploymentTransactionHash": "0xa986666f970d10d016063eda74844d57e974581bdea7ffddb1c4f7f3bfeefd10",
-  "codeHash": "0xeea2a1554b9c0d3c9a528aba0c38a7b3dd22300370251d0e77faeaa6e9590e5a"
-}

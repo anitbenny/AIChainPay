@@ -2,17 +2,6 @@
 
 AIChainPay is a Sepolia-only DApp for sending test ETH from a Solidity vault. The owner connects MetaMask to deposit funds and grant a separate agent a limited spending allowance. Routine payment requests and exact Confirm/Reject decisions happen inside ChatGPT through an authenticated MCP connector; the agent pays gas and the recipient receives ETH from the vault. No mainnet funds are supported.
 
-## Assignment checklist
-
-| Requirement | Where to find it |
-| --- | --- |
-| Solidity contract with user-callable functions | [AIChainPay.sol](./contracts/AIChainPay.sol): `deposit`, `withdraw`, `grantAgent`, `revokeAgent` |
-| Frontend with wallet connection, contract calls and returned data | [React dashboard](./frontend/src/App.tsx): connect/verify MetaMask, deposit, grant, revoke, withdraw, balances and activity |
-| Testnet and ethers.js | Sepolia (chain ID 11155111); ethers.js in the frontend, connector and Hardhat deployment |
-| Deployment and frontend instructions | Below |
-| Contract address and screenshot | Below |
-| GitHub repository | [AIChainPay on GitHub](https://github.com/anitbenny/AIChainPay) |
-
 ## Deployed Sepolia contract
 
 - Network: **Sepolia**, chain ID **11155111**.
